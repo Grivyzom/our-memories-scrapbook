@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "Our Memories",
+    "slug": "our-memories-scrapbook",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#5B6E96",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#5B6E96",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.ourmemories.scrapbook",
+      "buildNumber": "1.0.0",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Our Memories necesita acceso a tu galería para colocar tus fotos favoritas en los marcos del álbum.",
+        "NSPhotoLibraryAddUsageDescription": "Our Memories necesita permiso para guardar capturas de tu álbum en tu galería."
+      }
+    },
+    "android": {
+      "package": "com.ourmemories.scrapbook",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#8B1E24"
+      },
+      "permissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permite que Our Memories acceda a tus fotos para personalizar cada marco del scrapbook."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "REEMPLAZAR-CON-TU-EAS-PROJECT-ID"
+      }
+    }
+  }
+}
