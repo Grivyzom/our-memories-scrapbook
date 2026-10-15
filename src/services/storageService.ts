@@ -21,19 +21,19 @@ export async function loadScrapbookState(): Promise<{
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      return { spreads: INITIAL_SPREADS, totalPages: 5 };
+      return { spreads: INITIAL_SPREADS, totalPages: INITIAL_SPREADS.length * 2 };
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed.spreads) && parsed.spreads.length > 0) {
       return {
         spreads: parsed.spreads,
-        totalPages: parsed.totalPages ?? 5,
+        totalPages: Math.max(parsed.totalPages ?? 0, parsed.spreads.length * 2),
       };
     }
-    return { spreads: INITIAL_SPREADS, totalPages: 5 };
+    return { spreads: INITIAL_SPREADS, totalPages: INITIAL_SPREADS.length * 2 };
   } catch (error) {
     console.warn('Error cargando estado del scrapbook:', error);
-    return { spreads: INITIAL_SPREADS, totalPages: 5 };
+    return { spreads: INITIAL_SPREADS, totalPages: INITIAL_SPREADS.length * 2 };
   }
 }
 

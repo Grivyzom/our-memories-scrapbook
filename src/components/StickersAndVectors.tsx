@@ -9,6 +9,7 @@ import Svg, {
   LinearGradient as SvgGradient,
   Stop,
   Ellipse,
+  Line,
 } from 'react-native-svg';
 
 /**
@@ -255,3 +256,95 @@ export const WhiteRosesBouquetSVG: React.FC<{ width?: number; height?: number }>
     <Path d="M45 72 L39 83 M45 72 L51 83" stroke="#B92B27" strokeWidth="2.2" strokeLinecap="round" />
   </Svg>
 );
+
+/**
+ * Lomo de cuaderno en Alta Definición (HD):
+ * Hendidura central realista, brillo de curvatura de página y costuras artesanales con hilo marfil.
+ * Reemplaza el difuminado borroso por un centro nítido y detallado.
+ */
+export const HDSpineBindingSVG: React.FC<{ height?: number; width?: number }> = ({
+  height = 600,
+  width = 36,
+}) => {
+  const stitchCount = 13;
+  const stitchSpacing = height / (stitchCount + 1);
+  const midX = width / 2;
+
+  return (
+    <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} fill="none">
+      <Defs>
+        <SvgGradient id="spineCurvatureHD" x1="0" y1="0" x2="1" y2="0">
+          <Stop offset="0%" stopColor="#2E2016" stopOpacity="0.01" />
+          <Stop offset="30%" stopColor="#2E2016" stopOpacity="0.14" />
+          <Stop offset="47%" stopColor="#1B120B" stopOpacity="0.32" />
+          <Stop offset="50%" stopColor="#100A06" stopOpacity="0.5" />
+          <Stop offset="52%" stopColor="#FFFFFF" stopOpacity="0.4" />
+          <Stop offset="68%" stopColor="#2E2016" stopOpacity="0.14" />
+          <Stop offset="100%" stopColor="#2E2016" stopOpacity="0.01" />
+        </SvgGradient>
+      </Defs>
+
+      {/* Sombra de curvatura suave y definida del lomo */}
+      <Rect x="0" y="0" width={width} height={height} fill="url(#spineCurvatureHD)" />
+
+      {/* Hendidura profunda central ultra nítida */}
+      <Line
+        x1={midX - 0.5}
+        y1="0"
+        x2={midX - 0.5}
+        y2={height}
+        stroke="#23170E"
+        strokeWidth="1.2"
+        opacity={0.65}
+      />
+      {/* Brillo 3D adyacente que le da nitidez HD */}
+      <Line
+        x1={midX + 0.8}
+        y1="0"
+        x2={midX + 0.8}
+        y2={height}
+        stroke="#FFFFFF"
+        strokeWidth="1"
+        opacity={0.55}
+      />
+
+      {/* Puntadas de encuadernación artesanales en hilo color marfil */}
+      {Array.from({ length: stitchCount }).map((_, i) => {
+        const y = stitchSpacing * (i + 1);
+        return (
+          <G key={`stitch-${i}`}>
+            {/* Perforación de aguja izquierda */}
+            <Circle cx={midX - 5} cy={y} r="1.4" fill="#1C130D" opacity={0.75} />
+            <Circle cx={midX - 5} cy={y - 0.5} r="0.8" fill="#000000" opacity={0.4} />
+
+            {/* Perforación de aguja derecha */}
+            <Circle cx={midX + 5} cy={y} r="1.4" fill="#1C130D" opacity={0.75} />
+            <Circle cx={midX + 5} cy={y - 0.5} r="0.8" fill="#000000" opacity={0.4} />
+
+            {/* Sombra tenue debajo del hilo */}
+            <Line
+              x1={midX - 5}
+              y1={y + 1}
+              x2={midX + 5}
+              y2={y + 1}
+              stroke="#2B1A0E"
+              strokeWidth="1"
+              opacity={0.35}
+            />
+
+            {/* Hilo de costura artesanal tenso cruzando el lomo */}
+            <Line
+              x1={midX - 5}
+              y1={y}
+              x2={midX + 5}
+              y2={y}
+              stroke="#F8F3E6"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+            />
+          </G>
+        );
+      })}
+    </Svg>
+  );
+};

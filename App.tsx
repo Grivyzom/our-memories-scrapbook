@@ -12,7 +12,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, {
+import {
   useSharedValue,
   withTiming,
   Easing,
@@ -36,7 +36,7 @@ export default function App() {
   const [isBookOpen, setIsBookOpen] = useState(false);
   const [spreads, setSpreads] = useState<ScrapbookSpreadData[]>(INITIAL_SPREADS);
   const [activeSpreadIndex, setActiveSpreadIndex] = useState(0);
-  const [totalPages, setTotalPages] = useState(5);
+  const [totalPages, setTotalPages] = useState(INITIAL_SPREADS.length * 2);
 
   const openProgress = useSharedValue(0);
   const scrapbookCaptureRef = useRef<View>(null);
@@ -45,7 +45,7 @@ export default function App() {
     (async () => {
       const saved = await loadScrapbookState();
       setSpreads(saved.spreads);
-      setTotalPages(saved.totalPages);
+      setTotalPages(Math.max(saved.totalPages, saved.spreads.length * 2));
     })();
   }, []);
 
@@ -67,6 +67,25 @@ export default function App() {
       duration: 520,
       easing: Easing.out(Easing.cubic),
     });
+  };
+
+  // Navegación entre páginas / pliegos
+  const handlePrevSpread = () => {
+    if (activeSpreadIndex > 0) {
+      setActiveSpreadIndex((prev) => prev - 1);
+    }
+  };
+
+  const handleNextSpread = () => {
+    if (activeSpreadIndex < spreads.length - 1) {
+      setActiveSpreadIndex((prev) => prev + 1);
+    }
+  };
+
+  const handleGoToSpread = (index: number) => {
+    if (index >= 0 && index < spreads.length) {
+      setActiveSpreadIndex(index);
+    }
   };
 
   // Subir y persistir foto localmente al tocar cualquier marco
@@ -103,25 +122,39 @@ export default function App() {
 
   // Botón 1 (...): Más opciones
   const handleMoreOptions = () => {
+    const pageA = activeSpreadIndex * 2 + 1;
+    const pageB = activeSpreadIndex * 2 + 2;
+
     Alert.alert(
-      'Our Memories ❤️',
+      'Nuestros Recuerdos ❤️',
       isBookOpen
-        ? 'Toca cualquier marco fotográfico para elegir una foto de tu galería. Desliza con un dedo o usa dos dedos para hacer zoom.'
+        ? `Pliego actual: ${activeSpreadIndex + 1} de ${spreads.length} (Páginas ${pageA} y ${pageB}).\n\nToca cualquier marco para elegir una foto de tu galería. Usa las flechas en pantalla para navegar entre páginas.`
         : 'Toca la portada para abrir tu cuaderno interactivo.',
       [
         {
           text: isBookOpen ? 'Cerrar Cuaderno' : 'Abrir Cuaderno',
           onPress: () => (isBookOpen ? handleCloseBook() : handleOpenBook()),
         },
-        ...(spreads.length > 1
+        ...(spreads.length > 1 && activeSpreadIndex < spreads.length - 1
           ? [
               {
-                text: `Cambiar Pliego (${activeSpreadIndex + 1}/${spreads.length})`,
-                onPress: () =>
-                  setActiveSpreadIndex((prev) => (prev + 1) % spreads.length),
+                text: 'Siguiente Pliego ▶',
+                onPress: handleNextSpread,
               },
             ]
           : []),
+        ...(spreads.length > 1 && activeSpreadIndex > 0
+          ? [
+              {
+                text: '◀ Pliego Anterior',
+                onPress: handlePrevSpread,
+              },
+            ]
+          : []),
+        {
+          text: 'Añadir Nuevo Pliego (+)',
+          onPress: handleAddPage,
+        },
         { text: 'Cancelar', style: 'cancel' as const },
       ]
     );
@@ -147,7 +180,7 @@ export default function App() {
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
         await Sharing.shareAsync(uri, {
-          dialogTitle: 'Compartir Our Memories Scrapbook',
+          dialogTitle: 'Compartir Nuestros Recuerdos',
         });
       } else {
         Alert.alert('Captura lista', `Imagen guardada en: ${uri}`);
@@ -160,7 +193,7 @@ export default function App() {
   // Botón 3 (trash): Borrar / Resetear fotos a las imágenes por defecto
   const handleResetPhotos = () => {
     Alert.alert(
-      'Resetear fotos',
+      'Restaurar fotos',
       '¿Deseas restaurar todas las fotografías a las imágenes románticas por defecto?',
       [
         { text: 'Cancelar', style: 'cancel' },
@@ -169,16 +202,9 @@ export default function App() {
           style: 'destructive',
           onPress: async () => {
             await clearAllSavedPhotos();
-            const resetData: ScrapbookSpreadData[] = [
-              {
-                id: 'spread-1',
-                title: 'Spread 1',
-                photos: { ...DEFAULT_PHOTOS },
-              },
-            ];
-            setSpreads(resetData);
+            setSpreads(INITIAL_SPREADS);
             setActiveSpreadIndex(0);
-            setTotalPages(5);
+            setTotalPages(INITIAL_SPREADS.length * 2);
           },
         },
       ]
@@ -187,33 +213,38 @@ export default function App() {
 
   // Botón 4 (+): Añadir página / nuevo pliego al álbum
   const handleAddPage = async () => {
-    const nextPageCount = totalPages + 1;
+    const nextSpreadNumber = spreads.length + 1;
     const newSpread: ScrapbookSpreadData = {
       id: `spread-${Date.now()}`,
-      title: `Spread ${spreads.length + 1}`,
+      title: `Pliego ${nextSpreadNumber}`,
       photos: { ...DEFAULT_PHOTOS },
     };
     const updatedSpreads = [...spreads, newSpread];
-    setTotalPages(nextPageCount);
+    const newTotalPages = updatedSpreads.length * 2;
+
+    setTotalPages(newTotalPages);
     setSpreads(updatedSpreads);
     setActiveSpreadIndex(updatedSpreads.length - 1);
-    await saveScrapbookState(updatedSpreads, nextPageCount);
+    await saveScrapbookState(updatedSpreads, newTotalPages);
 
     if (!isBookOpen) {
       handleOpenBook();
     } else {
       Alert.alert(
-        'Nueva página añadida ✨',
-        `Ahora tu cuaderno tiene ${nextPageCount} Pages. Estás viendo el pliego #${updatedSpreads.length}.`
+        '¡Nuevo pliego añadido! ✨',
+        `Ahora tu cuaderno tiene ${newTotalPages} páginas. Has avanzado al Pliego #${nextSpreadNumber} (Páginas ${newTotalPages - 1} y ${newTotalPages}).`
       );
     }
   };
+
+  const currentPageA = activeSpreadIndex * 2 + 1;
+  const currentPageB = activeSpreadIndex * 2 + 2;
 
   return (
     <GestureHandlerRootView style={styles.root}>
       <StatusBar style="light" />
       <LinearGradient
-        colors={['#5B6E96', '#7B88B5']}
+        colors={['#4F6084', '#6D7DA8']}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 1 }}
         style={styles.gradientBackground}
@@ -221,14 +252,18 @@ export default function App() {
         <SafeAreaView style={styles.safeArea}>
           {/* ==================== ENCABEZADO SUPERIOR CENTRADO ==================== */}
           <View style={styles.headerContainer}>
-            <Text style={styles.headerTitle}>Our Memories ❤️</Text>
+            <Text style={styles.headerTitle}>Nuestros Recuerdos ❤️</Text>
             <View style={styles.headerSubtitleRow}>
               <Ionicons
-                name="documents-outline"
+                name="book-outline"
                 size={14}
                 color="rgba(255, 255, 255, 0.78)"
               />
-              <Text style={styles.headerSubtitleText}>{`${totalPages} Pages`}</Text>
+              <Text style={styles.headerSubtitleText}>
+                {isBookOpen
+                  ? `Pliego ${activeSpreadIndex + 1} de ${spreads.length} • Págs. ${currentPageA}-${currentPageB}`
+                  : `${totalPages} Páginas`}
+              </Text>
             </View>
           </View>
 
@@ -245,6 +280,11 @@ export default function App() {
                 onSelectPhotoSlot={handleSelectPhotoSlot}
                 onCloseBook={handleCloseBook}
                 captureRef={scrapbookCaptureRef}
+                activeSpreadIndex={activeSpreadIndex}
+                totalSpreads={spreads.length}
+                onPrevSpread={handlePrevSpread}
+                onNextSpread={handleNextSpread}
+                onGoToSpread={handleGoToSpread}
               />
             )}
           </View>
@@ -258,6 +298,7 @@ export default function App() {
                 styles.circleToolButton,
                 pressed && styles.circleToolButtonPressed,
               ]}
+              accessibilityLabel="Más opciones"
             >
               <Feather name="more-horizontal" size={22} color="#1A1A1A" />
             </Pressable>
@@ -269,6 +310,7 @@ export default function App() {
                 styles.circleToolButton,
                 pressed && styles.circleToolButtonPressed,
               ]}
+              accessibilityLabel="Compartir pliego"
             >
               <Feather name="share" size={20} color="#1A1A1A" />
             </Pressable>
@@ -280,6 +322,7 @@ export default function App() {
                 styles.circleToolButton,
                 pressed && styles.circleToolButtonPressed,
               ]}
+              accessibilityLabel="Restaurar fotos"
             >
               <Feather name="trash-2" size={20} color="#1A1A1A" />
             </Pressable>
@@ -291,6 +334,7 @@ export default function App() {
                 styles.circleToolButton,
                 pressed && styles.circleToolButtonPressed,
               ]}
+              accessibilityLabel="Añadir nuevo pliego"
             >
               <Feather name="plus" size={23} color="#1A1A1A" />
             </Pressable>
@@ -318,7 +362,7 @@ const styles = StyleSheet.create({
   headerContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
+    paddingVertical: 6,
     zIndex: 20,
   },
   headerTitle: {
@@ -334,9 +378,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   headerSubtitleText: {
-    fontSize: 13.5,
+    fontSize: 13,
     fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.78)',
+    color: 'rgba(255, 255, 255, 0.82)',
   },
   stageArea: {
     flex: 1,
@@ -348,8 +392,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 20,
-    paddingBottom: Platform.OS === 'ios' ? 12 : 22,
-    paddingTop: 8,
+    paddingBottom: Platform.OS === 'ios' ? 12 : 20,
+    paddingTop: 6,
     zIndex: 30,
   },
   circleToolButton: {

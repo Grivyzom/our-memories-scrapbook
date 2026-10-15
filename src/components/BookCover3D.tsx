@@ -157,11 +157,12 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
                 </View>
               ))}
 
-              {/* Etiqueta central rosa pálido con borde ondulado y texto cursivo "Our Memories" */}
+              {/* Etiqueta central rosa pálido con borde ondulado y título en español */}
               <View style={styles.centerBadgeWrapper}>
                 <CloudBadgeSVG width={236} height={130} />
                 <View style={styles.badgeTextOverlay}>
-                  <Text style={styles.cursiveCoverTitle}>Our Memories</Text>
+                  <Text style={styles.cursiveCoverTitle}>Nuestros Recuerdos</Text>
+                  <Text style={styles.cursiveCoverSubtitle}>Our Memories</Text>
                 </View>
               </View>
             </View>
@@ -290,7 +291,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   cursiveCoverTitle: {
-    fontSize: 27,
+    fontSize: 23,
     color: '#6E1419',
     fontStyle: 'italic',
     fontWeight: '700',
@@ -299,10 +300,21 @@ const styles = StyleSheet.create({
       android: 'serif',
       default: 'serif',
     }),
-    letterSpacing: 0.6,
+    letterSpacing: 0.4,
     textShadowColor: 'rgba(255, 255, 255, 0.7)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 1,
+    textAlign: 'center',
+  },
+  cursiveCoverSubtitle: {
+    fontSize: 10.5,
+    color: '#8E2830',
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    marginTop: 2,
+    textTransform: 'uppercase',
+    textAlign: 'center',
+    opacity: 0.85,
   },
   tapHintText: {
     marginTop: 18,

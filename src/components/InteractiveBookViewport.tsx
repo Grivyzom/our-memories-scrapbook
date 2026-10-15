@@ -11,7 +11,6 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
-  withTiming,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -29,6 +28,11 @@ interface InteractiveBookViewportProps {
   onSelectPhotoSlot: (slot: PhotoSlotKey) => void;
   onCloseBook: () => void;
   captureRef: React.RefObject<View>;
+  activeSpreadIndex: number;
+  totalSpreads: number;
+  onPrevSpread: () => void;
+  onNextSpread: () => void;
+  onGoToSpread?: (index: number) => void;
 }
 
 const SPRING_CONFIG = {
@@ -42,13 +46,17 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   onSelectPhotoSlot,
   onCloseBook,
   captureRef,
+  activeSpreadIndex,
+  totalSpreads,
+  onPrevSpread,
+  onNextSpread,
 }) => {
   const [focusZone, setFocusZone] = useState<CameraFocusZone>('left');
 
-  // Escalas calculadas para adaptarse a cualquier pantalla de smartphone
+  // Escalas calculadas para adaptarse a cualquier smartphone
   const singlePageScale = Math.min(
-    (SCREEN_WIDTH * 0.92) / (SPREAD_WIDTH * 0.52),
-    (SCREEN_HEIGHT * 0.62) / SPREAD_HEIGHT
+    (SCREEN_WIDTH * 0.94) / (SPREAD_WIDTH * 0.52),
+    (SCREEN_HEIGHT * 0.58) / SPREAD_HEIGHT
   );
   const fullSpreadScale = (SCREEN_WIDTH * 0.95) / (SPREAD_WIDTH + 28);
   const rotatedLandscapeScale = Math.min(
@@ -58,8 +66,8 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
   const scale = useSharedValue(singlePageScale);
   const savedScale = useSharedValue(singlePageScale);
-  const translateX = useSharedValue((SPREAD_WIDTH * 0.24) * singlePageScale);
-  const savedTranslateX = useSharedValue((SPREAD_WIDTH * 0.24) * singlePageScale);
+  const translateX = useSharedValue((SPREAD_WIDTH * 0.23) * singlePageScale);
+  const savedTranslateX = useSharedValue((SPREAD_WIDTH * 0.23) * singlePageScale);
   const translateY = useSharedValue(0);
   const savedTranslateY = useSharedValue(0);
   const rotationDeg = useSharedValue(0);
@@ -75,9 +83,9 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       translateY.value = withSpring(0, SPRING_CONFIG);
       savedTranslateY.value = 0;
       rotationDeg.value = withSpring(0, SPRING_CONFIG);
-    } else if (zone === 'center') {
-      scale.value = withSpring(singlePageScale, SPRING_CONFIG);
-      savedScale.value = singlePageScale;
+    } else if (zone === 'center' || zone === 'full') {
+      scale.value = withSpring(fullSpreadScale, SPRING_CONFIG);
+      savedScale.value = fullSpreadScale;
       translateX.value = withSpring(0, SPRING_CONFIG);
       savedTranslateX.value = 0;
       translateY.value = withSpring(0, SPRING_CONFIG);
@@ -89,14 +97,6 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       savedScale.value = singlePageScale;
       translateX.value = withSpring(targetX, SPRING_CONFIG);
       savedTranslateX.value = targetX;
-      translateY.value = withSpring(0, SPRING_CONFIG);
-      savedTranslateY.value = 0;
-      rotationDeg.value = withSpring(0, SPRING_CONFIG);
-    } else if (zone === 'full') {
-      scale.value = withSpring(fullSpreadScale, SPRING_CONFIG);
-      savedScale.value = fullSpreadScale;
-      translateX.value = withSpring(0, SPRING_CONFIG);
-      savedTranslateX.value = 0;
       translateY.value = withSpring(0, SPRING_CONFIG);
       savedTranslateY.value = 0;
       rotationDeg.value = withSpring(0, SPRING_CONFIG);
@@ -115,15 +115,15 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
     applyCameraZone('left');
   }, []);
 
-  // Gesto Pan con física para recorrer Página Izquierda -> Centro -> Página Derecha
+  // Gesto Pan con amortiguación
   const panGesture = Gesture.Pan()
     .onUpdate((e) => {
       translateX.value = savedTranslateX.value + e.translationX;
       translateY.value = savedTranslateY.value + e.translationY * 0.6;
     })
     .onEnd(() => {
-      const maxOffsetX = (SPREAD_WIDTH * 0.34) * scale.value;
-      const maxOffsetY = (SPREAD_HEIGHT * 0.24) * scale.value;
+      const maxOffsetX = (SPREAD_WIDTH * 0.35) * scale.value;
+      const maxOffsetY = (SPREAD_HEIGHT * 0.25) * scale.value;
 
       const clampedX = Math.max(-maxOffsetX, Math.min(maxOffsetX, translateX.value));
       const clampedY = Math.max(-maxOffsetY, Math.min(maxOffsetY, translateY.value));
@@ -134,11 +134,11 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       savedTranslateY.value = clampedY;
     });
 
-  // Gesto Pinch-to-Zoom con dos dedos para acercar o ver el pliego completo
+  // Gesto Pinch-to-Zoom
   const pinchGesture = Gesture.Pinch()
     .onUpdate((e) => {
       const nextScale = savedScale.value * e.scale;
-      scale.value = Math.max(fullSpreadScale * 0.9, Math.min(1.35, nextScale));
+      scale.value = Math.max(fullSpreadScale * 0.85, Math.min(1.4, nextScale));
     })
     .onEnd(() => {
       savedScale.value = scale.value;
@@ -156,7 +156,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   }));
 
   const handleCycleViewMode = () => {
-    if (focusZone === 'full') {
+    if (focusZone === 'full' || focusZone === 'center') {
       applyCameraZone('landscape90');
     } else if (focusZone === 'landscape90') {
       applyCameraZone('left');
@@ -165,15 +165,60 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
     }
   };
 
+  const pageAStart = activeSpreadIndex * 2 + 1;
+  const pageBEnd = activeSpreadIndex * 2 + 2;
+
   return (
     <View style={styles.viewportWrapper}>
-      {/* Píldoras superiores de navegación de página + Botón de Cerrar Portada */}
-      <View style={styles.cameraNavRow}>
-        <Pressable onPress={onCloseBook} style={styles.closeCoverChip}>
-          <Ionicons name="book-outline" size={14} color="#FFF" />
-          <Text style={styles.closeCoverChipText}>Portada</Text>
-        </Pressable>
+      {/* ==================== PANEL DE CONTROL SUPERIOR ==================== */}
+      <View style={styles.topControlPanel}>
+        {/* Fila 1: Botón Portada + Selector de Pliego y Páginas */}
+        <View style={styles.topRow}>
+          <Pressable onPress={onCloseBook} style={styles.closeCoverChip}>
+            <Ionicons name="book-outline" size={13} color="#FFF" />
+            <Text style={styles.closeCoverChipText}>Portada</Text>
+          </Pressable>
 
+          <View style={styles.spreadNavChip}>
+            <Pressable
+              onPress={onPrevSpread}
+              disabled={activeSpreadIndex === 0}
+              style={[
+                styles.miniNavBtn,
+                activeSpreadIndex === 0 && styles.miniNavBtnDisabled,
+              ]}
+              hitSlop={8}
+            >
+              <Ionicons
+                name="chevron-back"
+                size={14}
+                color={activeSpreadIndex === 0 ? 'rgba(255,255,255,0.3)' : '#FFF'}
+              />
+            </Pressable>
+
+            <Text style={styles.spreadNavText}>
+              Pliego {activeSpreadIndex + 1}/{totalSpreads} (Págs. {pageAStart}-{pageBEnd})
+            </Text>
+
+            <Pressable
+              onPress={onNextSpread}
+              disabled={activeSpreadIndex >= totalSpreads - 1}
+              style={[
+                styles.miniNavBtn,
+                activeSpreadIndex >= totalSpreads - 1 && styles.miniNavBtnDisabled,
+              ]}
+              hitSlop={8}
+            >
+              <Ionicons
+                name="chevron-forward"
+                size={14}
+                color={activeSpreadIndex >= totalSpreads - 1 ? 'rgba(255,255,255,0.3)' : '#FFF'}
+              />
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Fila 2: Píldoras de Enfoque de Página (Página A, Ambas, Página B) */}
         <View style={styles.pageZonePills}>
           <Pressable
             onPress={() => applyCameraZone('left')}
@@ -188,24 +233,24 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
                 focusZone === 'left' && styles.zonePillTextActive,
               ]}
             >
-              Izquierda
+              Pág. A (Izq.)
             </Text>
           </Pressable>
 
           <Pressable
-            onPress={() => applyCameraZone('center')}
+            onPress={() => applyCameraZone('full')}
             style={[
               styles.zonePill,
-              focusZone === 'center' && styles.zonePillActive,
+              (focusZone === 'full' || focusZone === 'center') && styles.zonePillActive,
             ]}
           >
             <Text
               style={[
                 styles.zonePillText,
-                focusZone === 'center' && styles.zonePillTextActive,
+                (focusZone === 'full' || focusZone === 'center') && styles.zonePillTextActive,
               ]}
             >
-              Centro
+              Ambas Páginas
             </Text>
           </Pressable>
 
@@ -222,13 +267,38 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
                 focusZone === 'right' && styles.zonePillTextActive,
               ]}
             >
-              Derecha
+              Pág. B (Der.)
             </Text>
           </Pressable>
         </View>
       </View>
 
-      {/* Lienzo interactivo con soporte Pan + Pinch-to-Zoom */}
+      {/* ==================== BOTONES LATERALES DE CAMBIO DE PÁGINA ==================== */}
+      {/* Botón flotante para ir a la página/pliego anterior */}
+      {activeSpreadIndex > 0 && (
+        <Pressable
+          onPress={onPrevSpread}
+          style={styles.floatingPageTurnBtnLeft}
+          hitSlop={10}
+        >
+          <Ionicons name="chevron-back" size={24} color="#FFF" />
+          <Text style={styles.floatingPageTurnText}>Ant.</Text>
+        </Pressable>
+      )}
+
+      {/* Botón flotante para ir a la página/pliego siguiente */}
+      {activeSpreadIndex < totalSpreads - 1 && (
+        <Pressable
+          onPress={onNextSpread}
+          style={styles.floatingPageTurnBtnRight}
+          hitSlop={10}
+        >
+          <Ionicons name="chevron-forward" size={24} color="#FFF" />
+          <Text style={styles.floatingPageTurnText}>Sig.</Text>
+        </Pressable>
+      )}
+
+      {/* ==================== ÁREA INTERACTIVA CON GESTOS ==================== */}
       <GestureDetector gesture={composedGesture}>
         <Animated.View style={styles.gestureStage}>
           <Animated.View style={animatedViewportStyle}>
@@ -236,30 +306,31 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
               <ScrapbookSpread
                 photos={photos}
                 onSelectPhotoSlot={onSelectPhotoSlot}
+                spreadIndex={activeSpreadIndex}
               />
             </View>
           </Animated.View>
         </Animated.View>
       </GestureDetector>
 
-      {/* Botón flotante sutil de "Vista Completa / Rotar" */}
+      {/* Botón flotante inferior: Vista Completa / Rotar Pliego */}
       <Pressable onPress={handleCycleViewMode} style={styles.floatingModeButton}>
         <Ionicons
           name={
-            focusZone === 'full'
+            focusZone === 'full' || focusZone === 'center'
               ? 'phone-landscape-outline'
               : focusZone === 'landscape90'
               ? 'scan-outline'
               : 'expand-outline'
           }
-          size={16}
+          size={15}
           color="#FFF"
         />
         <Text style={styles.floatingModeButtonText}>
-          {focusZone === 'full'
+          {focusZone === 'full' || focusZone === 'center'
             ? 'Rotar Pliego 90°'
             : focusZone === 'landscape90'
-            ? 'Enfocar Página'
+            ? 'Enfocar Página A'
             : 'Vista Completa / Rotar'}
         </Text>
       </Pressable>
@@ -274,41 +345,82 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cameraNavRow: {
+  topControlPanel: {
     position: 'absolute',
-    top: 4,
+    top: 2,
     zIndex: 30,
+    width: '100%',
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    gap: 6,
+  },
+  topRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    maxWidth: 420,
     gap: 8,
-    paddingHorizontal: 14,
   },
   closeCoverChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(25, 33, 52, 0.42)',
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 18,
+    gap: 4,
+    backgroundColor: 'rgba(25, 33, 52, 0.65)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.22)',
+    borderColor: 'rgba(255, 255, 255, 0.24)',
   },
   closeCoverChipText: {
     color: '#FFFFFF',
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '600',
+  },
+  spreadNavChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(25, 33, 52, 0.72)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  miniNavBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  miniNavBtnDisabled: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  spreadNavText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   pageZonePills: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(25, 33, 52, 0.38)',
+    backgroundColor: 'rgba(25, 33, 52, 0.45)',
     borderRadius: 20,
     padding: 3,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   zonePill: {
-    paddingHorizontal: 11,
+    paddingHorizontal: 12,
     paddingVertical: 5,
     borderRadius: 16,
   },
@@ -316,14 +428,62 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   zonePillText: {
-    color: 'rgba(255, 255, 255, 0.85)',
-    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.88)',
+    fontSize: 11.5,
     fontWeight: '600',
   },
   zonePillTextActive: {
     color: '#2B3654',
     fontWeight: '700',
   },
+
+  /* --- Botones Flotantes Laterales para Cambiar Páginas --- */
+  floatingPageTurnBtnLeft: {
+    position: 'absolute',
+    left: 8,
+    top: '48%',
+    zIndex: 40,
+    backgroundColor: 'rgba(20, 28, 45, 0.78)',
+    borderRadius: 22,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.2,
+    borderColor: 'rgba(255, 255, 255, 0.32)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  floatingPageTurnBtnRight: {
+    position: 'absolute',
+    right: 8,
+    top: '48%',
+    zIndex: 40,
+    backgroundColor: 'rgba(20, 28, 45, 0.78)',
+    borderRadius: 22,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.2,
+    borderColor: 'rgba(255, 255, 255, 0.32)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  floatingPageTurnText: {
+    color: '#FFFFFF',
+    fontSize: 9.5,
+    fontWeight: '700',
+    marginTop: 1,
+  },
+
+  /* --- Stage --- */
   gestureStage: {
     flex: 1,
     width: SCREEN_WIDTH,
@@ -333,25 +493,25 @@ const styles = StyleSheet.create({
   },
   floatingModeButton: {
     position: 'absolute',
-    bottom: 14,
+    bottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
-    backgroundColor: 'rgba(24, 32, 50, 0.68)',
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    borderRadius: 22,
+    gap: 6,
+    backgroundColor: 'rgba(24, 32, 50, 0.75)',
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.28)',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.25,
     shadowRadius: 6,
     elevation: 6,
   },
   floatingModeButtonText: {
     color: '#FFFFFF',
-    fontSize: 12.5,
+    fontSize: 12,
     fontWeight: '600',
     letterSpacing: 0.2,
   },
