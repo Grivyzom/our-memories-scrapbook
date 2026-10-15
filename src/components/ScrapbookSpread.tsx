@@ -8,6 +8,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { PhotoSlotKey, SpreadPhotosMap } from '../types/scrapbook';
 import { SPREAD_WIDTH, SPREAD_HEIGHT } from '../constants/defaultData';
 import {
@@ -18,6 +19,7 @@ import {
   WatercolorHeartSVG,
   HDSpineBindingSVG,
 } from './StickersAndVectors';
+import { LeatherTexture, PaperTexture } from './Textures';
 
 interface ScrapbookSpreadProps {
   photos: SpreadPhotosMap;
@@ -37,6 +39,11 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
 
   return (
     <View style={styles.outerBookCoverBase}>
+      {/* Textura de cuero en las tapas burdeos */}
+      <View style={styles.leatherClip} pointerEvents="none">
+        <LeatherTexture seed={27} intensity={1.15} />
+      </View>
+
       {/* Hojas apiladas debajo en los bordes para dar volumen real de libro */}
       <View style={[styles.stackedSheet, styles.sheetLayer5]} />
       <View style={[styles.stackedSheet, styles.sheetLayer4]} />
@@ -48,6 +55,27 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
         {/* Textura de papel rasgado decorativo en esquinas */}
         <View style={styles.tornPaperTopLeft} />
         <View style={styles.tornPaperBottomRight} />
+
+        {/* Textura de papel (fibras y motas) sobre ambas hojas */}
+        <PaperTexture seed={17} />
+
+        {/* Curvatura 3D de las hojas: sombra en el pliegue central y luz en los bordes */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={[
+            'rgba(120, 90, 50, 0.10)',
+            'rgba(255, 255, 255, 0)',
+            'rgba(255, 255, 255, 0.10)',
+            'rgba(70, 45, 20, 0.22)',
+            'rgba(255, 255, 255, 0.10)',
+            'rgba(255, 255, 255, 0)',
+            'rgba(120, 90, 50, 0.10)',
+          ]}
+          locations={[0, 0.08, 0.42, 0.5, 0.58, 0.92, 1]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={styles.pageCurvatureShade}
+        />
 
         {/* ==================================================================== */}
         {/* ======================= PÁGINA A (LADO IZQUIERDO) ================== */}
@@ -366,6 +394,15 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.45,
     shadowRadius: 26,
     elevation: 20,
+  },
+  leatherClip: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  pageCurvatureShade: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
   },
   stackedSheet: {
     position: 'absolute',
