@@ -39,7 +39,15 @@
           "photosPermission": "Permite que Our Memories acceda a tus fotos para personalizar cada marco del scrapbook."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "1.9.25"
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {
