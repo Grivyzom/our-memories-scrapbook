@@ -1,17 +1,97 @@
+# ==========================================
+# React Native & Expo (.gitignore)
+# ==========================================
+
+# Dependencies & Package Managers
 node_modules/
+.pnp
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Expo & Metro Bundler
 .expo/
+.expo-shared/
 dist/
-npm-debug.*
+web-build/
+*.tsbuildinfo
+
+# EAS & Local Logs
+eas_log.txt
+*.log
+
+# Environment variables & secrets (Never commit secrets!)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+credentials.json
+
+# Build Binaries & Packages
+*.apk
+*.aab
+*.ipa
+*.zip
+*.tgz
+*.tar.gz
+
+# Keystores & Signing Keys
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
+*.pem
 *.mobileprovision
-*.orig.*
-web-build/
 
+# Native Android (Bare / Prebuild / Local)
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+*.orig.*
+
+# Native iOS (Bare / Prebuild / Pods / Xcode)
+ios/Pods/
+ios/build/
+*.xcworkspace
+*.moved-aside
+DerivedData/
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.pbxuser
+!default.mode1v3
+!default.mode2v3
+!default.perspectivev3
+!default.pbxuser
+
+# Operating System files
 # macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+# Windows
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+# Linux
+*~
 
-*.apk
-eas_log.txt
+# IDE & Editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.iml
+*.sublime-workspace
+*.sublime-project
