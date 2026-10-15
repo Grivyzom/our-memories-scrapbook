@@ -28,7 +28,8 @@
       },
       "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_EXTERNAL_STORAGE"
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "plugins": [
@@ -37,12 +38,14 @@
         {
           "photosPermission": "Permite que Our Memories acceda a tus fotos para personalizar cada marco del scrapbook."
         }
-      ]
+      ],
+      "expo-asset"
     ],
     "extra": {
       "eas": {
-        "projectId": "REEMPLAZAR-CON-TU-EAS-PROJECT-ID"
+        "projectId": "70f0ec2b-f294-4112-911f-62e7d93cbb80"
       }
-    }
+    },
+    "owner": "grivyzom"
   }
 }
