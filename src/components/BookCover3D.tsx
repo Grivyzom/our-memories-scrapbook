@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,7 @@ import Animated, {
   cancelAnimation,
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
-import { CloudBadgeSVG, WatercolorHeartSVG } from './StickersAndVectors';
+import { CloudBadge, WatercolorHeart } from './Stickers';
 import {
   LinenTexture,
   LeatherTexture,
@@ -40,6 +40,7 @@ import {
   stackZIndex,
 } from './book3d/engine';
 import { LeafFace } from './book3d/LeafFace';
+import { FaceFrame, ProjectedFace } from './book3d/ProjectedFace';
 import {
   OPEN_BOOK_TILT,
   SPREAD_HEIGHT,
@@ -114,10 +115,86 @@ const HEART_PATTERN = [
   { top: '88%', left: '77%', size: 20, rot: -14 },
 ];
 
-const projectFace = (geo: FaceGeometry, yaw: number, pitch: number) => {
+const W = COVER_WIDTH;
+const H = COVER_HEIGHT;
+const D = BOOK_DEPTH;
+
+interface CoverView {
+  yaw: number;
+  pitch: number;
+  hinge: number;
+}
+
+/** Proyecta una cara del bloque; `z` = zIndex (0 para las caras fijas). */
+const frameFor = (geo: FaceGeometry, v: CoverView, z: number, shown = true): FaceFrame => {
   'worklet';
-  return projectFace3D(geo, yaw, pitch, PROJECTION);
+  const p = projectFace3D(geo, v.yaw, v.pitch, PROJECTION);
+  return { visible: p.visible && shown, shade: p.shade, zIndex: z, transform: p.transform };
 };
+
+// Geometría fija del bloque (no depende de la tapa)
+const BACK_GEO: FaceGeometry = { center: { x: 0, y: 0, z: -D / 2 }, faceYaw: 180, faceRotX: 0 };
+const TOP_GEO: FaceGeometry = { center: { x: 0, y: -H / 2, z: 0 }, faceYaw: 0, faceRotX: 90 };
+const BOTTOM_GEO: FaceGeometry = { center: { x: 0, y: H / 2, z: 0 }, faceYaw: 0, faceRotX: -90 };
+const FORE_EDGE_GEO: FaceGeometry = { center: { x: W / 2, y: 0, z: 0 }, faceYaw: 90, faceRotX: 0 };
+const SPINE_GEO: FaceGeometry = { center: { x: -W / 2, y: 0, z: 0 }, faceYaw: -90, faceRotX: 0 };
+const FIRST_PAGE_GEO: FaceGeometry = { center: { x: 0, y: 0, z: D / 2 - 1 }, faceYaw: 0, faceRotX: 0 };
+
+// Geometría de la tapa articulada sobre el lomo (x = -W/2, z = +D/2)
+const coverGeometry = (hingeDeg: number, inside: boolean): FaceGeometry => {
+  'worklet';
+  const a = hingeDeg * DEG;
+  return {
+    center: {
+      x: -W / 2 + (W / 2) * Math.cos(a),
+      y: 0,
+      z: D / 2 + (W / 2) * Math.sin(a),
+    },
+    faceYaw: -hingeDeg + (inside ? 180 : 0),
+    faceRotX: 0,
+  };
+};
+
+/* ---- Vuelo de cada hoja del abanico (función pura de openProgress) ---- */
+const leafStart = (index: number) => {
+  'worklet';
+  return OPEN_LEAF_START + index * OPEN_LEAF_STAGGER;
+};
+// Cada hoja cae algo menos tumbada que la anterior: se ve el escalonado del bloque
+const leafLandAngle = (index: number) => {
+  'worklet';
+  return COVER_OPEN_DEG - 1.5 - index * 1.4;
+};
+const leafCurve = (index: number, progress: number) => {
+  'worklet';
+  return leafFlightCurve((progress - leafStart(index)) / OPEN_LEAF_FLIGHT);
+};
+const leafTheta = (index: number, progress: number) => {
+  'worklet';
+  return Math.min(1, leafCurve(index, progress)) * leafLandAngle(index);
+};
+
+/**
+ * Orden de pintado de la tapa (posición 0) y las hojas (1..OPEN_LEAVES).
+ * Usa la misma clave que `stackZIndex`, pero devuelve la posición en el orden:
+ * el zIndex sólo cambia cuando dos hojas se cruzan, no en cada frame.
+ */
+const stackOrder = (hinge: number, progress: number): number[] => {
+  'worklet';
+  const ranks = OPEN_LEAVES + 1;
+  const keys = [stackZIndex(hinge, hinge < 90 ? OPEN_LEAVES + 1 : 0, ranks)];
+  for (let i = 0; i < OPEN_LEAVES; i++) {
+    const t = leafTheta(i, progress);
+    keys.push(stackZIndex(t, t < 90 ? OPEN_LEAVES - i : i + 1, ranks));
+  }
+  return keys.map((k) => {
+    let below = 0;
+    for (let j = 0; j < keys.length; j++) if (keys[j] < k) below++;
+    return 10 + below;
+  });
+};
+
+const CLOSED_ORDER = stackOrder(0, 0);
 
 interface BookCover3DProps {
   openProgress: SharedValue<number>;
@@ -128,10 +205,6 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
   openProgress,
   onOpenBook,
 }) => {
-  const W = COVER_WIDTH;
-  const H = COVER_HEIGHT;
-  const D = BOOK_DEPTH;
-
   // Orientación libre del libro controlada por el usuario
   const yaw = useSharedValue(DEFAULT_YAW - 30);
   const pitch = useSharedValue(DEFAULT_PITCH);
@@ -177,9 +250,9 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
   const gesture = Gesture.Race(panToRotate, tapToOpen);
 
   // Al abrir, el libro vuelve a mirar de frente mientras la tapa gira sobre el lomo:
-  // acelera, frena y se pasa un poco antes de asentarse por su peso
-  const getView = () => {
-    'worklet';
+  // acelera, frena y se pasa un poco antes de asentarse por su peso.
+  // Se calcula una sola vez por frame y todas las caras lo leen.
+  const view = useDerivedValue<CoverView>(() => {
     const settle = interpolate(openProgress.value, [0, 0.4], [1, 0], Extrapolation.CLAMP);
     const swing = Math.min(1, openProgress.value / COVER_SWING_END);
     return {
@@ -187,86 +260,49 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
       pitch: pitch.value * settle + OPEN_BOOK_TILT * (1 - settle),
       hinge: leafFlightCurve(swing) * COVER_OPEN_DEG,
     };
-  };
-
-  const viewYaw = useDerivedValue(() => getView().yaw);
-  const viewPitch = useDerivedValue(() => getView().pitch);
-  const coverHinge = useDerivedValue(() => getView().hinge);
-  // La tapa encabeza la pila en el lado derecho y queda debajo de las hojas al caer a la izquierda
-  const coverZ = useDerivedValue(() =>
-    stackZIndex(coverHinge.value, coverHinge.value < 90 ? OPEN_LEAVES + 1 : 0, OPEN_LEAVES + 1)
+  });
+  const viewYaw = useDerivedValue(() => view.value.yaw);
+  const viewPitch = useDerivedValue(() => view.value.pitch);
+  // Con el libro cerrado no hay nada que ordenar: no se recalcula al girarlo
+  const order = useDerivedValue(() =>
+    openProgress.value > 0 ? stackOrder(view.value.hinge, openProgress.value) : CLOSED_ORDER
   );
 
-  // Geometría de la tapa articulada sobre el lomo (x = -W/2, z = +D/2)
-  const coverGeometry = (hingeDeg: number, inside: boolean): FaceGeometry => {
+  const projectBack = () => {
     'worklet';
-    const a = hingeDeg * DEG;
-    return {
-      center: {
-        x: -W / 2 + (W / 2) * Math.cos(a),
-        y: 0,
-        z: D / 2 + (W / 2) * Math.sin(a),
-      },
-      faceYaw: -hingeDeg + (inside ? 180 : 0),
-      faceRotX: 0,
-    };
+    return frameFor(BACK_GEO, view.value, 0);
   };
-
-  const useFace = (
-    geometry: (hinge: number) => FaceGeometry,
-    z?: SharedValue<number>,
-    onlyWhenOpen = false
-  ) => {
-    const faceStyle = useAnimatedStyle(() => {
-      const v = getView();
-      const p = projectFace(geometry(v.hinge), v.yaw, v.pitch);
-      // La guarda interior queda oculta con el libro cerrado (si no, se ve al girarlo de espaldas)
-      const shown = p.visible && (!onlyWhenOpen || v.hinge > 0.5);
-      return {
-        opacity: shown ? 1 : 0,
-        zIndex: z ? z.value : 0,
-        transform: p.transform as any,
-      };
-    });
-    const shadeStyle = useAnimatedStyle(() => {
-      const v = getView();
-      return { opacity: projectFace(geometry(v.hinge), v.yaw, v.pitch).shade };
-    });
-    return [faceStyle, shadeStyle] as const;
+  const projectTop = () => {
+    'worklet';
+    return frameFor(TOP_GEO, view.value, 0);
   };
-
-  const [backStyle, backShade] = useFace(() => {
+  const projectBottom = () => {
     'worklet';
-    return { center: { x: 0, y: 0, z: -D / 2 }, faceYaw: 180, faceRotX: 0 };
-  });
-  const [topStyle, topShade] = useFace(() => {
+    return frameFor(BOTTOM_GEO, view.value, 0);
+  };
+  const projectForeEdge = () => {
     'worklet';
-    return { center: { x: 0, y: -H / 2, z: 0 }, faceYaw: 0, faceRotX: 90 };
-  });
-  const [bottomStyle, bottomShade] = useFace(() => {
+    return frameFor(FORE_EDGE_GEO, view.value, 0);
+  };
+  const projectSpine = () => {
     'worklet';
-    return { center: { x: 0, y: H / 2, z: 0 }, faceYaw: 0, faceRotX: -90 };
-  });
-  const [foreEdgeStyle, foreEdgeShade] = useFace(() => {
+    return frameFor(SPINE_GEO, view.value, 0);
+  };
+  const projectFirstPage = () => {
     'worklet';
-    return { center: { x: W / 2, y: 0, z: 0 }, faceYaw: 90, faceRotX: 0 };
-  });
-  const [spineStyle, spineShade] = useFace(() => {
+    return frameFor(FIRST_PAGE_GEO, view.value, 0);
+  };
+  // La guarda interior queda oculta con el libro cerrado (si no, se ve al girarlo de espaldas)
+  const projectCoverInside = () => {
     'worklet';
-    return { center: { x: -W / 2, y: 0, z: 0 }, faceYaw: -90, faceRotX: 0 };
-  });
-  const [firstPageStyle, firstPageShade] = useFace(() => {
+    const v = view.value;
+    return frameFor(coverGeometry(v.hinge, true), v, order.value[0], v.hinge > 0.5);
+  };
+  const projectCoverFront = () => {
     'worklet';
-    return { center: { x: 0, y: 0, z: D / 2 - 1 }, faceYaw: 0, faceRotX: 0 };
-  });
-  const [coverInsideStyle, coverInsideShade] = useFace((hinge) => {
-    'worklet';
-    return coverGeometry(hinge, true);
-  }, coverZ, true);
-  const [coverFrontStyle, coverFrontShade] = useFace((hinge) => {
-    'worklet';
-    return coverGeometry(hinge, false);
-  }, coverZ);
+    const v = view.value;
+    return frameFor(coverGeometry(v.hinge, false), v, order.value[0]);
+  };
 
   // Encaje con el pliego abierto: desplaza el lomo al centro y ajusta la escala
   const stageStyle = useAnimatedStyle(() => {
@@ -284,7 +320,7 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
 
   // Sombra proyectada en el "suelo": se ensancha según el ancho visible del libro
   const groundShadowStyle = useAnimatedStyle(() => {
-    const v = getView();
+    const v = view.value;
     const y = v.yaw * DEG;
     const visibleWidth = Math.abs(Math.cos(y)) * W + Math.abs(Math.sin(y)) * D;
     return {
@@ -296,18 +332,6 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
       ],
     };
   });
-
-  const centered = (w: number, h: number) => ({
-    width: w,
-    height: h,
-    left: (W - w) / 2,
-    top: (H - h) / 2,
-  });
-
-  const rasterize = {
-    renderToHardwareTextureAndroid: true,
-    shouldRasterizeIOS: true,
-  };
 
   return (
     <View style={styles.centerContainer}>
@@ -322,31 +346,31 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
             </Animated.View>
 
             {/* ---------- Contratapa ---------- */}
-            <Animated.View style={[styles.face, centered(W, H), backStyle]} {...rasterize}>
+            <ProjectedFace project={projectBack} style={centered(W, H)} {...FACE}>
               <BackCoverArt />
-              <Animated.View style={[styles.shade, backShade]} />
-            </Animated.View>
+            </ProjectedFace>
 
             {/* ---------- Cantos de hojas (superior, inferior y lateral) ---------- */}
-            <Animated.View style={[styles.face, styles.edgeHorizontal, centered(W, D), topStyle]} {...rasterize}>
+            <ProjectedFace project={projectTop} style={[styles.edgeHorizontal, centered(W, D)]} {...FACE}>
               <PageEdgeTexture direction="horizontal" lines={10} seed={3} />
-              <Animated.View style={[styles.shade, topShade]} />
-            </Animated.View>
-            <Animated.View style={[styles.face, styles.edgeHorizontal, centered(W, D), bottomStyle]} {...rasterize}>
+            </ProjectedFace>
+            <ProjectedFace project={projectBottom} style={[styles.edgeHorizontal, centered(W, D)]} {...FACE}>
               <PageEdgeTexture direction="horizontal" lines={10} seed={4} />
-              <Animated.View style={[styles.shade, bottomShade]} />
-            </Animated.View>
-            <Animated.View style={[styles.face, styles.edgeVertical, centered(D, H), foreEdgeStyle]} {...rasterize}>
+            </ProjectedFace>
+            <ProjectedFace project={projectForeEdge} style={[styles.edgeVertical, centered(D, H)]} {...FACE}>
               <PageEdgeTexture direction="vertical" lines={10} seed={5} />
-              <Animated.View style={[styles.shade, foreEdgeShade]} />
-            </Animated.View>
+            </ProjectedFace>
 
             {/* ---------- Primera hoja (visible al levantar la tapa) ---------- */}
-            <Animated.View style={[styles.face, styles.firstPage, centered(W - 4, H - 4), firstPageStyle]} {...rasterize}>
+            <ProjectedFace
+              project={projectFirstPage}
+              style={[styles.firstPage, centered(W - 4, H - 4)]}
+              contentStyle={styles.firstPageContent}
+              {...FACE}
+            >
               <PaperTexture seed={31} />
               <Text style={styles.firstPageTitle}>Nuestra Historia ❤️</Text>
-              <Animated.View style={[styles.shade, firstPageShade]} />
-            </Animated.View>
+            </ProjectedFace>
 
             {/* ---------- Hojas que despegan en abanico al abrir ---------- */}
             {Array.from({ length: OPEN_LEAVES }, (_, i) => (
@@ -354,28 +378,26 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
                 key={i}
                 index={i}
                 openProgress={openProgress}
+                order={order}
                 yaw={viewYaw}
                 pitch={viewPitch}
               />
             ))}
 
             {/* ---------- Lomo ---------- */}
-            <Animated.View style={[styles.face, centered(D + 1, H), spineStyle]} {...rasterize}>
+            <ProjectedFace project={projectSpine} style={centered(D + 1, H)} {...FACE}>
               <SpineArt />
-              <Animated.View style={[styles.shade, spineShade]} />
-            </Animated.View>
+            </ProjectedFace>
 
             {/* ---------- Tapa: guarda interior ---------- */}
-            <Animated.View style={[styles.face, centered(W, H), coverInsideStyle]} {...rasterize}>
+            <ProjectedFace project={projectCoverInside} style={centered(W, H)} {...FACE}>
               <EndpaperArt />
-              <Animated.View style={[styles.shade, coverInsideShade]} />
-            </Animated.View>
+            </ProjectedFace>
 
             {/* ---------- Tapa: portada exterior ---------- */}
-            <Animated.View style={[styles.face, centered(W, H), coverFrontStyle]} {...rasterize}>
+            <ProjectedFace project={projectCoverFront} style={centered(W, H)} {...FACE}>
               <FrontCoverArt />
-              <Animated.View style={[styles.shade, coverFrontShade]} />
-            </Animated.View>
+            </ProjectedFace>
           </Animated.View>
         </Animated.View>
       </GestureDetector>
@@ -387,44 +409,54 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
   );
 };
 
+// Arte de las caras cacheado en la GPU; la sombra va aparte (ver ProjectedFace)
+const FACE = { rasterize: true, shadeColor: '#12060A' } as const;
+
+const centered = (w: number, h: number) => ({
+  width: w,
+  height: h,
+  left: (W - w) / 2,
+  top: (H - h) / 2,
+});
+
 /* ======================= HOJA DEL EFECTO GRIMORIO ======================= */
 
 const LEAF_THICKNESS = 1.6;
 
-const OpeningLeaf: React.FC<{
+interface OpeningLeafProps {
   index: number;
   openProgress: SharedValue<number>;
+  order: SharedValue<number[]>;
   yaw: SharedValue<number>;
   pitch: SharedValue<number>;
-}> = ({ index, openProgress, yaw, pitch }) => {
-  const W = COVER_WIDTH;
-  const H = COVER_HEIGHT;
-  const D = BOOK_DEPTH;
+}
 
+const OpeningLeaf = React.memo(function OpeningLeaf({
+  index,
+  openProgress,
+  order,
+  yaw,
+  pitch,
+}: OpeningLeafProps) {
   // Hojas apiladas bajo la tapa: cada una un poco más hundida en el bloque
-  const spec: LeafSpec = {
-    hinge: { x: -W / 2, y: 0, z: D / 2 - 1.5 - index * (LEAF_THICKNESS + 0.4) },
-    length: W - 4,
-    segments: OPEN_LEAF_SEGMENTS,
-    thickness: LEAF_THICKNESS,
-  };
-  // Cada hoja cae algo menos tumbada que la anterior: se ve el escalonado del bloque
-  const landAngle = COVER_OPEN_DEG - 1.5 - index * 1.4;
-  const start = OPEN_LEAF_START + index * OPEN_LEAF_STAGGER;
+  const spec = useMemo<LeafSpec>(
+    () => ({
+      hinge: { x: -W / 2, y: 0, z: D / 2 - 1.5 - index * (LEAF_THICKNESS + 0.4) },
+      length: W - 4,
+      segments: OPEN_LEAF_SEGMENTS,
+      thickness: LEAF_THICKNESS,
+    }),
+    [index]
+  );
   const maxBend = OPEN_LEAF_MAX_BEND * (1 - index * 0.06);
 
-  const curve = useDerivedValue(() =>
-    leafFlightCurve((openProgress.value - start) / OPEN_LEAF_FLIGHT)
-  );
-  const theta = useDerivedValue(() => Math.min(1, curve.value) * landAngle);
+  const curve = useDerivedValue(() => leafCurve(index, openProgress.value));
+  const theta = useDerivedValue(() => Math.min(1, curve.value) * leafLandAngle(index));
   const bend = useDerivedValue(() =>
     leafBendFromProgress(curve.value, maxBend, OPEN_LEAF_BOUNCE)
   );
-  const zIndex = useDerivedValue(() => {
-    const rank = theta.value < 90 ? OPEN_LEAVES - index : index + 1;
-    return stackZIndex(theta.value, rank, OPEN_LEAVES + 1);
-  });
-  // Ocultas mientras el libro está cerrado (quedan bajo la tapa)
+  const zIndex = useDerivedValue(() => order.value[index + 1]);
+  // Ocultas mientras el libro está cerrado (quedan bajo la tapa): no cuestan nada
   const presence = useDerivedValue<number>(() => (openProgress.value > 0.02 ? 1 : 0));
 
   const faceProps = {
@@ -452,7 +484,7 @@ const OpeningLeaf: React.FC<{
       <LeafFace {...faceProps} kind="edge" style={styles.leafEdge} />
     </>
   );
-};
+});
 
 /* ============================== ARTE DE CADA CARA ============================== */
 
@@ -475,12 +507,12 @@ const FrontCoverArt: React.FC = () => (
           key={index}
           style={[styles.heartPosition, { top: item.top as any, left: item.left as any }]}
         >
-          <WatercolorHeartSVG size={item.size} rotation={item.rot} />
+          <WatercolorHeart size={item.size} rotation={item.rot} />
         </View>
       ))}
 
       <View style={styles.centerBadgeWrapper}>
-        <CloudBadgeSVG width={236} height={130} />
+        <CloudBadge width={236} height={130} />
         <View style={styles.badgeTextOverlay}>
           <Text style={styles.cursiveCoverTitle}>Nuestros Recuerdos</Text>
           <Text style={styles.cursiveCoverSubtitle}>Our Memories</Text>
@@ -505,7 +537,7 @@ const BackCoverArt: React.FC = () => (
     <View style={styles.creamCover}>
       <LinenTexture seed={12} />
       <View style={styles.backHeartWrapper}>
-        <WatercolorHeartSVG size={30} rotation={-6} />
+        <WatercolorHeart size={30} rotation={-6} />
         <Text style={styles.backCoverText}>hecho con amor</Text>
       </View>
     </View>
@@ -554,7 +586,7 @@ const EndpaperArt: React.FC = () => (
         key={index}
         style={[styles.heartPosition, { top: item.top as any, left: item.left as any, opacity: 0.35 }]}
       >
-        <WatercolorHeartSVG size={item.size * 0.8} rotation={item.rot} />
+        <WatercolorHeart size={item.size * 0.8} rotation={item.rot} />
       </View>
     ))}
     <LinearGradient
@@ -580,14 +612,6 @@ const styles = StyleSheet.create({
     height: COVER_HEIGHT + 70,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  face: {
-    position: 'absolute',
-    overflow: 'hidden',
-  },
-  shade: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#12060A',
   },
   groundShadow: {
     position: 'absolute',
@@ -628,6 +652,8 @@ const styles = StyleSheet.create({
   },
   firstPage: {
     backgroundColor: '#FDFBF2',
+  },
+  firstPageContent: {
     alignItems: 'center',
     justifyContent: 'center',
   },

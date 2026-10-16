@@ -7,7 +7,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "build:apk": "eas build -p android --profile preview",
-    "build:ipa": "eas build -p ios --profile preview"
+    "build:ipa": "eas build -p ios --profile preview",
+    "bake-art": "node scripts/bake-art.js"
   },
   "dependencies": {
     "@expo/vector-icons": "^14.0.4",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/react": "~18.3.12",
     "typescript": "^5.3.3"
   },

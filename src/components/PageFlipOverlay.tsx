@@ -220,7 +220,11 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
     // En el lado de salida manda la primera hoja; en el de llegada, la última en caer
     const onStartSide = dir === 'next' ? theta.value < 90 : theta.value > 90;
     const rank = onStartSide ? LEAF_COUNT - 1 - index : index;
-    return stackZIndex(theta.value, rank, LEAF_COUNT);
+    const z = stackZIndex(theta.value, rank, LEAF_COUNT);
+    // Con una sola hoja basta saber si está tumbada (bajo la sombra) o en el aire:
+    // así el zIndex no cambia en cada frame y no se reordenan las vistas nativas
+    if (LEAF_COUNT === 1) return z < 10 + LEAF_COUNT + 1 ? z : 10 + LEAF_COUNT + 1;
+    return z;
   });
 
   const faceProps = {
