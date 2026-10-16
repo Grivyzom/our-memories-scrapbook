@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -13,7 +13,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { initialWindowMetrics } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
   BLOCK_CATALOG,
@@ -44,6 +44,24 @@ const SIDE_LABEL: Record<PageSide, string> = { left: 'izquierda', right: 'derech
 const otherSide = (side: PageSide): PageSide => (side === 'left' ? 'right' : 'left');
 const pageNumberOf = (spreadIndex: number, side: PageSide) => spreadIndex * 2 + (side === 'left' ? 1 : 2);
 
+// Tiempo que se agrupan las ediciones antes de subirlas al libro
+const COMMIT_DELAY_MS = 250;
+
+/**
+ * Márgenes del sistema. Se leen una vez de la ventana en vez de usar un
+ * SafeAreaProvider dentro del Modal: en Android (nueva arquitectura) ese
+ * proveedor nunca recibía las medidas y no pintaba nada, así que sólo se veía
+ * la pantalla oscurecida del Modal.
+ */
+const getInsets = () => {
+  const insets = initialWindowMetrics?.insets;
+  const statusBar = Platform.OS === 'android' ? StatusBar.currentHeight ?? 24 : 0;
+  return {
+    top: Math.max(insets?.top ?? 0, statusBar),
+    bottom: insets?.bottom ?? 0,
+  };
+};
+
 /**
  * Editor de un pliego a pantalla completa. Antes era una hoja flotante con
  * altura en porcentaje dentro de un Modal transparente, y en Android se
@@ -59,9 +77,7 @@ export const PageEditor: React.FC<PageEditorProps> = (props) => (
     statusBarTranslucent
     onRequestClose={props.onClose}
   >
-    <SafeAreaProvider>
-      <EditorScreen {...props} />
-    </SafeAreaProvider>
+    <EditorScreen {...props} />
   </Modal>
 );
 
@@ -74,12 +90,69 @@ const EditorScreen: React.FC<PageEditorProps> = ({
   onPickPhoto,
   onClose,
 }) => {
-  const insets = useSafeAreaInsets();
+  const insets = useMemo(getInsets, []);
   const { width, height } = useWindowDimensions();
   const [side, setSide] = useState<PageSide>(initialSide);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+
+  /*
+   * Borrador local: cada tecla sólo re-renderiza el editor, no toda la app con
+   * el libro 3D debajo. Los cambios se suben agrupados y siempre antes de
+   * cerrar o de elegir una foto.
+   */
+  const [draft, setDraft] = useState(spread);
+  const draftRef = useRef(spread);
+  const emittedRef = useRef(spread);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  const flush = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (draftRef.current !== emittedRef.current) {
+      emittedRef.current = draftRef.current;
+      onChangeRef.current(draftRef.current);
+    }
+  }, []);
+
+  const commit = (next: ScrapbookSpreadData) => {
+    draftRef.current = next;
+    setDraft(next);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(flush, COMMIT_DELAY_MS);
+  };
+
+  // Cambios que llegan de fuera (p. ej. una foto ya guardada) reemplazan el borrador
+  useEffect(() => {
+    if (spread !== emittedRef.current) {
+      emittedRef.current = spread;
+      draftRef.current = spread;
+      setDraft(spread);
+    }
+  }, [spread]);
+
+  // Lo pendiente no se pierde aunque el editor se cierre desde fuera
+  useEffect(() => flush, [flush]);
+
+  const onPickPhotoRef = useRef(onPickPhoto);
+  onPickPhotoRef.current = onPickPhoto;
+  const pickPhoto = useCallback(
+    (s: PageSide, blockId: string, photoIndex: number) => {
+      flush();
+      onPickPhotoRef.current(s, blockId, photoIndex);
+    },
+    [flush]
+  );
+  const openCatalog = useCallback(() => setCatalogOpen(true), []);
+  const close = () => {
+    flush();
+    onClose();
+  };
 
   useEffect(() => {
     if (visible) {
@@ -89,15 +162,19 @@ const EditorScreen: React.FC<PageEditorProps> = ({
     }
   }, [visible, initialSide]);
 
-  const blocks = spread[side].blocks;
+  const blocks = draft[side].blocks;
   const fill = pageFill(blocks);
-  const nothingFits = CATALOG_ORDER.every((type) => !fitsInPage([...blocks, createBlock(type)]));
-
-  // En Android con la barra translúcida el inset superior puede llegar a 0
-  const topInset = Math.max(insets.top, Platform.OS === 'android' ? StatusBar.currentHeight ?? 24 : 0);
+  // Qué tipos caben aún: sólo se recalcula cuando cambian los componentes
+  const fitsByType = useMemo(() => {
+    const result = {} as Record<BlockType, boolean>;
+    for (const type of CATALOG_ORDER) result[type] = fitsInPage([...blocks, createBlock(type)]);
+    return result;
+  }, [blocks]);
+  const nothingFits = CATALOG_ORDER.every((type) => !fitsByType[type]);
+  const topInset = insets.top;
 
   const setBlocks = (target: PageSide, next: PageBlock[]) =>
-    onChange({ ...spread, [target]: { blocks: next } });
+    commit({ ...draft, [target]: { blocks: next } });
 
   const updateBlock = (id: string, patch: Partial<PageBlock>) =>
     setBlocks(side, blocks.map((b) => (b.id === id ? { ...b, ...patch } : b)));
@@ -123,10 +200,10 @@ const EditorScreen: React.FC<PageEditorProps> = ({
 
   const moveToOtherPage = (block: PageBlock) => {
     const other = otherSide(side);
-    onChange({
-      ...spread,
+    commit({
+      ...draft,
       [side]: { blocks: blocks.filter((b) => b.id !== block.id) },
-      [other]: { blocks: [...spread[other].blocks, block] },
+      [other]: { blocks: [...draft[other].blocks, block] },
     });
     setExpandedId(null);
   };
@@ -166,7 +243,7 @@ const EditorScreen: React.FC<PageEditorProps> = ({
             </Text>
           </View>
           <Pressable
-            onPress={onClose}
+            onPress={close}
             style={({ pressed }) => [styles.doneButton, pressed && styles.pressed]}
             accessibilityLabel="Terminar de diseñar"
             hitSlop={8}
@@ -180,7 +257,7 @@ const EditorScreen: React.FC<PageEditorProps> = ({
         <View style={styles.tabs}>
           {(['left', 'right'] as PageSide[]).map((s) => {
             const active = s === side;
-            const sideFill = Math.min(1, pageFill(spread[s].blocks));
+            const sideFill = Math.min(1, pageFill(draft[s].blocks));
             return (
               <Pressable
                 key={s}
@@ -230,11 +307,11 @@ const EditorScreen: React.FC<PageEditorProps> = ({
                 }}
               >
                 <BookPageView
-                  page={spread[side]}
+                  page={draft[side]}
                   side={side}
                   pageNumber={pageNumberOf(spreadIndex, side)}
-                  onPressPhoto={onPickPhoto}
-                  onPressEmpty={() => setCatalogOpen(true)}
+                  onPressPhoto={pickPhoto}
+                  onPressEmpty={openCatalog}
                 />
               </View>
             </View>
@@ -250,7 +327,7 @@ const EditorScreen: React.FC<PageEditorProps> = ({
           {blocks.map((block, index) => {
             const def = BLOCK_CATALOG[block.type];
             const expanded = expandedId === block.id;
-            const fitsOther = fitsInPage([...spread[otherSide(side)].blocks, block]);
+            const fitsOther = expanded && fitsInPage([...draft[otherSide(side)].blocks, block]);
             const preview =
               block.type === 'sticker'
                 ? STICKER_OPTIONS.find((o) => o.kind === block.sticker)?.label
@@ -285,7 +362,7 @@ const EditorScreen: React.FC<PageEditorProps> = ({
                           {block.photos.map((uri, i) => (
                             <Pressable
                               key={i}
-                              onPress={() => onPickPhoto(side, block.id, i)}
+                              onPress={() => pickPhoto(side, block.id, i)}
                               style={({ pressed }) => [styles.photoThumb, pressed && styles.pressed]}
                               accessibilityLabel={`Elegir foto ${i + 1}`}
                             >
@@ -422,7 +499,7 @@ const EditorScreen: React.FC<PageEditorProps> = ({
             <ScrollView contentContainerStyle={styles.catalogGrid}>
               {CATALOG_ORDER.map((type) => {
                 const def = BLOCK_CATALOG[type];
-                const fits = fitsInPage([...blocks, createBlock(type)]);
+                const fits = fitsByType[type];
                 return (
                   <Pressable
                     key={type}
