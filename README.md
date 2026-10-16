@@ -253,6 +253,7 @@ eas build -p ios --profile production
 | `npm run ios` | Inicia el servidor y se conecta automáticamente al simulador de iOS |
 | `npm run build:apk` | Compila en la nube el archivo `.apk` instalable para Android mediante EAS |
 | `npm run build:ipa` | Compila en la nube el archivo `.ipa` para distribución Ad-Hoc en iOS mediante EAS |
+| `npm run bake-art` | Regenera los PNG de `assets/baked` (texturas y stickers) a partir de sus SVG. Ejecútalo tras cambiar `src/components/art/TextureSVG.tsx` o `src/components/StickersAndVectors.tsx` |
 
 ---
 

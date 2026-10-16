@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -12,13 +12,13 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { PhotoSlotKey, SpreadPhotosMap } from '../types/scrapbook';
 import { SPREAD_WIDTH, SPREAD_HEIGHT } from '../constants/defaultData';
 import {
-  DriedOrangeFlowersSVG,
-  VerticalBarcodeSVG,
-  VintageCherubSVG,
-  WhiteRosesBouquetSVG,
-  WatercolorHeartSVG,
-  HDSpineBindingSVG,
-} from './StickersAndVectors';
+  DriedOrangeFlowers,
+  VerticalBarcode,
+  VintageCherub,
+  WhiteRosesBouquet,
+  WatercolorHeart,
+  HDSpineBinding,
+} from './Stickers';
 import { LeatherTexture, PaperTexture } from './Textures';
 
 interface ScrapbookSpreadProps {
@@ -28,7 +28,21 @@ interface ScrapbookSpreadProps {
   /** Número de capas visibles en el bloque de hojas izquierdo / derecho. */
   leftStackLayers?: number;
   rightStackLayers?: number;
+  /** Se llama cada vez que todas las fotos del pliego terminan de cargar. */
+  onImagesLoaded?: () => void;
 }
+
+const PHOTO_SLOTS: PhotoSlotKey[] = [
+  'browserMain',
+  'musicPlayer',
+  'ticketHorizontal',
+  'polaroidBottom',
+  'film1',
+  'film2',
+  'film3',
+  'film4',
+  'film5',
+];
 
 // Escalonado de cada hoja del bloque: hacia fuera y hacia abajo (el libro está inclinado)
 const BLOCK_STEP_X = 1.5;
@@ -87,8 +101,29 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
   spreadIndex = 0,
   leftStackLayers = 4,
   rightStackLayers = 4,
+  onImagesLoaded,
 }) => {
   const [isPlayingRetroMusic, setIsPlayingRetroMusic] = useState(false);
+
+  // URI ya cargada en cada marco: al cambiar una sola foto basta con esperar a esa
+  const loadedUris = useRef<Partial<Record<PhotoSlotKey, string>>>({});
+  const photosRef = useRef(photos);
+  photosRef.current = photos;
+  const onImagesLoadedRef = useRef(onImagesLoaded);
+  onImagesLoadedRef.current = onImagesLoaded;
+
+  const checkAllLoaded = useCallback(() => {
+    const current = photosRef.current;
+    if (PHOTO_SLOTS.every((slot) => loadedUris.current[slot] === current[slot])) {
+      onImagesLoadedRef.current?.();
+    }
+  }, []);
+  const markLoaded = (slot: PhotoSlotKey) => () => {
+    loadedUris.current[slot] = photosRef.current[slot];
+    checkAllLoaded();
+  };
+  // Las fotos que no cambian no vuelven a avisar: se revisa al recibir las nuevas
+  useEffect(checkAllLoaded, [photos, checkAllLoaded]);
 
   const pageANumber = spreadIndex * 2 + 1;
   const pageBNumber = spreadIndex * 2 + 2;
@@ -171,6 +206,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
               >
                 <Image
                   source={{ uri: photos.browserMain }}
+                  onLoadEnd={markLoaded('browserMain')}
                   style={styles.fullImage}
                   resizeMode="cover"
                 />
@@ -203,6 +239,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
               >
                 <Image
                   source={{ uri: photos.musicPlayer }}
+                  onLoadEnd={markLoaded('musicPlayer')}
                   style={styles.fullImage}
                   resizeMode="cover"
                 />
@@ -234,7 +271,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
           {/* Fila Central: Flores Secas + Recorte de Máquina de Escribir en Español */}
           <View style={styles.centerLeftRow}>
             <View style={styles.driedFlowersWrapper}>
-              <DriedOrangeFlowersSVG width={80} height={100} />
+              <DriedOrangeFlowers width={80} height={100} />
             </View>
 
             <View style={styles.typewriterPaperCutout}>
@@ -245,13 +282,14 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
 
           {/* Fila Inferior: Ticket Vintage Horizontal con códigos de barras */}
           <View style={styles.vintageTicketFrame}>
-            <VerticalBarcodeSVG height={108} />
+            <VerticalBarcode height={108} />
             <Pressable
               onPress={() => onSelectPhotoSlot('ticketHorizontal')}
               style={styles.ticketPhotoSlot}
             >
               <Image
                 source={{ uri: photos.ticketHorizontal }}
+                onLoadEnd={markLoaded('ticketHorizontal')}
                 style={styles.fullImage}
                 resizeMode="cover"
               />
@@ -259,7 +297,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
                 <Ionicons name="camera" size={12} color="#FFF" />
               </View>
             </Pressable>
-            <VerticalBarcodeSVG height={108} />
+            <VerticalBarcode height={108} />
 
             {/* Recorte de papel en esquina inferior */}
             <View style={styles.homePaperCutout}>
@@ -277,7 +315,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
         {/* =============== LOMO CENTRAL DEL CUADERNO EN ALTA DEFINICIÓN (HD) == */}
         {/* ==================================================================== */}
         <View style={styles.centerSpineContainer} pointerEvents="none">
-          <HDSpineBindingSVG height={SPREAD_HEIGHT} width={36} />
+          <HDSpineBinding height={SPREAD_HEIGHT} width={36} />
         </View>
 
         {/* ==================================================================== */}
@@ -314,7 +352,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
               {/* Columna vertical de corazones de acuarela */}
               <View style={styles.fiveHeartsColumn}>
                 {[0, 1, 2, 3].map((h) => (
-                  <WatercolorHeartSVG
+                  <WatercolorHeart
                     key={h}
                     size={15}
                     rotation={h % 2 === 0 ? -8 : 8}
@@ -338,7 +376,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
               </View>
 
               <View style={styles.cherubStickerWrapper}>
-                <VintageCherubSVG size={68} />
+                <VintageCherub size={68} />
               </View>
             </View>
 
@@ -352,6 +390,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
                 >
                   <Image
                     source={{ uri: photos.polaroidBottom }}
+                    onLoadEnd={markLoaded('polaroidBottom')}
                     style={styles.fullImage}
                     resizeMode="cover"
                   />
@@ -363,7 +402,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
               </View>
 
               <View style={styles.rosesStickerWrapper}>
-                <WhiteRosesBouquetSVG width={80} height={102} />
+                <WhiteRosesBouquet width={80} height={102} />
               </View>
             </View>
 
@@ -393,6 +432,7 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
                   >
                     <Image
                       source={{ uri: photos[slotKey] }}
+                      onLoadEnd={markLoaded(slotKey)}
                       style={styles.fullImage}
                       resizeMode="cover"
                     />
@@ -403,9 +443,9 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
 
               {/* Corazones en la base del negativo */}
               <View style={styles.filmBaseHeartsRow}>
-                <WatercolorHeartSVG size={12} rotation={-10} />
-                <WatercolorHeartSVG size={13} rotation={4} />
-                <WatercolorHeartSVG size={12} rotation={12} />
+                <WatercolorHeart size={12} rotation={-10} />
+                <WatercolorHeart size={13} rotation={4} />
+                <WatercolorHeart size={12} rotation={12} />
               </View>
             </View>
 
