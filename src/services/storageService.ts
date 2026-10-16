@@ -12,10 +12,13 @@ import {
   ScrapbookSpreadData,
   StickerKind,
 } from '../types/scrapbook';
+import { decryptGift, encryptGift, generateGiftCode, isGiftEnvelope } from './giftCrypto';
 
 const STORAGE_KEY = '@our_memories_book_v2';
 const RECEIVED_KEY = '@our_memories_received_book_v2';
 const LEGACY_STORAGE_KEY = '@our_memories_scrapbook_v1';
+const GIFT_CODE_KEY = '@our_memories_gift_code_v1';
+const APP_STATE_KEY = '@our_memories_app_state_v1';
 const PHOTOS_DIR = `${FileSystem.documentDirectory}scrapbook_photos/`;
 const RECEIVED_DIR = `${FileSystem.documentDirectory}received_book/`;
 
@@ -213,13 +216,61 @@ export async function resetBook(): Promise<Book> {
     if (dirInfo.exists) {
       await FileSystem.deleteAsync(PHOTOS_DIR, { idempotent: true });
     }
-    await AsyncStorage.multiRemove([STORAGE_KEY, LEGACY_STORAGE_KEY]);
+    // El libro nuevo es otro regalo: tendrá su propio código
+    await AsyncStorage.multiRemove([STORAGE_KEY, LEGACY_STORAGE_KEY, GIFT_CODE_KEY]);
   } catch (error) {
     console.warn('Error limpiando el libro:', error);
   }
   const book = createEmptyBook();
   await saveBook(book);
   return book;
+}
+
+/* ============================ ESTADO DE LA APP ============================ */
+
+export interface AppState {
+  /** Ya pasó por la pantalla de bienvenida. */
+  onboarded: boolean;
+  /** Libro que se veía al cerrar la app. */
+  lastView: 'mine' | 'received';
+}
+
+export async function loadAppState(): Promise<AppState> {
+  try {
+    const raw = await AsyncStorage.getItem(APP_STATE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return {
+      onboarded: parsed?.onboarded === true,
+      lastView: parsed?.lastView === 'received' ? 'received' : 'mine',
+    };
+  } catch {
+    return { onboarded: false, lastView: 'mine' };
+  }
+}
+
+export async function saveAppState(state: AppState): Promise<void> {
+  try {
+    await AsyncStorage.setItem(APP_STATE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.warn('Error guardando el estado:', error);
+  }
+}
+
+/* ============================ CÓDIGO DEL REGALO ============================ */
+
+/**
+ * Código secreto del libro propio. Se genera una vez y se conserva: si el
+ * libro cambia y se vuelve a enviar, quien lo recibe usa el mismo código.
+ * Nunca viaja dentro del archivo.
+ */
+export async function getGiftCode(): Promise<string> {
+  try {
+    const saved = await AsyncStorage.getItem(GIFT_CODE_KEY);
+    if (saved) return saved;
+  } catch {}
+  const code = generateGiftCode();
+  await AsyncStorage.setItem(GIFT_CODE_KEY, code);
+  return code;
 }
 
 /* ============================ COMPARTIR ============================ */
@@ -248,9 +299,9 @@ const embedPhoto = async (uri: string, cache: Map<string, string>) => {
 /**
  * Empaqueta el libro en un único archivo autocontenido (las fotos van
  * incrustadas) que se puede enviar por WhatsApp, correo, AirDrop...
- * Quien lo recibe lo abre con "Abrir libro recibido".
+ * Con `giftCode` el contenido va cifrado: sólo se abre con ese código.
  */
-export async function exportBookPackage(book: Book): Promise<string> {
+export async function exportBookPackage(book: Book, giftCode?: string): Promise<string> {
   const cache = new Map<string, string>();
   const spreads: ScrapbookSpreadData[] = [];
   for (const sp of book.spreads) {
@@ -272,12 +323,14 @@ export async function exportBookPackage(book: Book): Promise<string> {
     exportedAt: new Date().toISOString(),
     book: { ...book, spreads },
   };
-  const safeName = (book.dedicatedTo ? `Para-${book.dedicatedTo}` : 'Nuestros-Recuerdos')
-    .normalize('NFD')
-    .replace(/[^\w-]+/g, '-')
-    .slice(0, 40);
-  const fileUri = `${FileSystem.cacheDirectory}${safeName}.recuerdos.json`;
-  await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(payload));
+  const json = JSON.stringify(payload);
+  // El nombre del archivo no delata a quién va dedicado: también lo verían otros
+  const fileName = giftCode ? 'Un-regalo-para-ti' : 'Nuestros-Recuerdos';
+  const fileUri = `${FileSystem.cacheDirectory}${fileName}.recuerdos.json`;
+  // Cifrar bloquea el hilo de JS un momento: antes se deja pintar el aviso
+  if (giftCode) await new Promise((resolve) => setTimeout(resolve, 60));
+  const contents = giftCode ? JSON.stringify(encryptGift(json, giftCode)) : json;
+  await FileSystem.writeAsStringAsync(fileUri, contents);
   return fileUri;
 }
 
@@ -316,14 +369,43 @@ const extractPhotos = async (book: Book): Promise<Book> => {
   return { ...book, spreads };
 };
 
-/** Lee un archivo de libro recibido, lo valida y lo guarda para verlo. */
-export async function importBookPackage(fileUri: string): Promise<Book> {
+export interface ReceivedFile {
+  parsed: any;
+  /** El libro va cifrado: hace falta el código para abrirlo. */
+  locked: boolean;
+}
+
+/** Lee un archivo recibido sin abrirlo todavía. */
+export async function readReceivedFile(fileUri: string): Promise<ReceivedFile> {
   const raw = await FileSystem.readAsStringAsync(fileUri);
   let parsed: any;
   try {
     parsed = JSON.parse(raw);
   } catch {
     throw new Error('INVALID_PACKAGE');
+  }
+  if (isGiftEnvelope(parsed)) return { parsed, locked: true };
+  if (parsed?.kind !== PACKAGE_KIND) throw new Error('INVALID_PACKAGE');
+  return { parsed, locked: false };
+}
+
+/**
+ * Abre un archivo recibido (con su código si va cifrado), lo valida y lo
+ * guarda para verlo. Errores: INVALID_PACKAGE, CODE_REQUIRED, WRONG_CODE.
+ */
+export async function importBookPackage(file: ReceivedFile, giftCode?: string): Promise<Book> {
+  let parsed = file.parsed;
+  if (file.locked) {
+    if (!giftCode) throw new Error('CODE_REQUIRED');
+    // Derivar la clave bloquea el hilo de JS un momento: antes se deja pintar la espera
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const opened = decryptGift(parsed, giftCode);
+    if (opened === null) throw new Error('WRONG_CODE');
+    try {
+      parsed = JSON.parse(opened);
+    } catch {
+      throw new Error('INVALID_PACKAGE');
+    }
   }
   if (parsed?.kind !== PACKAGE_KIND) throw new Error('INVALID_PACKAGE');
   // Un libro recibido nunca puede apuntar a archivos del teléfono de quien lo abre

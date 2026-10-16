@@ -24,6 +24,8 @@ interface LeafFaceProps {
   presence?: SharedValue<number>;
   yaw?: SharedValue<number>;
   pitch?: SharedValue<number>;
+  /** Distancia de la cámara por frame (si se omite, la de `projection`). */
+  perspective?: SharedValue<number>;
   projection: ProjectionOptions;
   stageWidth: number;
   stageHeight: number;
@@ -52,6 +54,7 @@ export const LeafFace: React.FC<LeafFaceProps> = ({
   presence,
   yaw,
   pitch,
+  perspective,
   projection,
   stageWidth,
   stageHeight,
@@ -68,7 +71,8 @@ export const LeafFace: React.FC<LeafFaceProps> = ({
       kind === 'edge'
         ? leafEdgeGeometry(spec, theta.value, bend.value)
         : leafSegmentGeometry(spec, theta.value, bend.value, seg, kind === 'front' ? 1 : -1);
-    const p = projectFace(geo, yaw ? yaw.value : 0, pitch ? pitch.value : 0, projection);
+    const opts = perspective ? { ...projection, perspective: perspective.value } : projection;
+    const p = projectFace(geo, yaw ? yaw.value : 0, pitch ? pitch.value : 0, opts);
     return {
       visible: p.visible,
       opacity: presence ? presence.value : 1,
