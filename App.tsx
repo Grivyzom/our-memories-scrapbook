@@ -759,6 +759,30 @@ export default function App() {
 
         <Toast message={toast} onHidden={() => setToast(null)} />
 
+        {/* ==================== BIENVENIDA ==================== */}
+        {/* Tapa el libro sin desmontarlo: sus animaciones terminan aunque no se vean */}
+        {screen !== 'book' && (
+          <LinearGradient colors={GRADIENT} locations={[0, 0.55, 1]} style={styles.welcomeLayer}>
+            <SafeAreaView style={styles.safeArea}>
+              {screen === 'welcome' && (
+                <WelcomeScreen
+                  initialStep={welcomeStep}
+                  initialName={book.dedicatedTo ?? ''}
+                  hasOwnBook={hasContent(book)}
+                  receivedFrom={receivedBook ? receivedBook.dedicatedTo ?? '' : null}
+                  onDedicate={handleDedicate}
+                  onContinueOwnBook={handleContinueOwnBook}
+                  onOpenGift={handleImportBook}
+                  onViewReceived={handleViewReceived}
+                  onDismiss={welcomeFromMenu ? () => setScreen('book') : undefined}
+                />
+              )}
+            </SafeAreaView>
+          </LinearGradient>
+        )}
+
+        {/* ==================== HOJAS Y EDITOR ==================== */}
+        {/* Al final para quedar encima de todo, también de la bienvenida (abrir un regalo) */}
         <ActionSheet
           visible={isMenuOpen}
           title={isReadOnly ? 'Regalo recibido 🎁' : 'Nuestros Recuerdos ❤️'}
@@ -796,28 +820,6 @@ export default function App() {
             onPickPhoto={handlePickPhoto}
             onClose={() => setEditor((e) => ({ ...e, visible: false }))}
           />
-        )}
-
-        {/* ==================== BIENVENIDA ==================== */}
-        {/* Tapa el libro sin desmontarlo: sus animaciones terminan aunque no se vean */}
-        {screen !== 'book' && (
-          <LinearGradient colors={GRADIENT} locations={[0, 0.55, 1]} style={styles.welcomeLayer}>
-            <SafeAreaView style={styles.safeArea}>
-              {screen === 'welcome' && (
-                <WelcomeScreen
-                  initialStep={welcomeStep}
-                  initialName={book.dedicatedTo ?? ''}
-                  hasOwnBook={hasContent(book)}
-                  receivedFrom={receivedBook ? receivedBook.dedicatedTo ?? '' : null}
-                  onDedicate={handleDedicate}
-                  onContinueOwnBook={handleContinueOwnBook}
-                  onOpenGift={handleImportBook}
-                  onViewReceived={handleViewReceived}
-                  onDismiss={welcomeFromMenu ? () => setScreen('book') : undefined}
-                />
-              )}
-            </SafeAreaView>
-          </LinearGradient>
         )}
       </LinearGradient>
     </GestureHandlerRootView>

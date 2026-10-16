@@ -1,6 +1,7 @@
 import React from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Overlay } from './Overlay';
 
 const CLOSE_DELAY_MS = 320;
 
@@ -31,61 +32,56 @@ export const ActionSheet: React.FC<ActionSheetProps> = ({
   subtitle,
   items,
   onClose,
-}) => (
-  <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-    <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar menú" />
-    <View style={styles.sheet}>
-      <View style={styles.handle} />
-      <Text style={styles.title}>{title}</Text>
-      {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+}) => {
+  const { height } = useWindowDimensions();
+  return (
+    <Overlay visible={visible} onClose={onClose}>
+      <View style={styles.sheet}>
+        <View style={styles.handle} />
+        <Text style={styles.title}>{title}</Text>
+        {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
 
-      <View style={styles.list}>
-        {items.map((item) => (
-          <Pressable
-            key={item.key}
-            disabled={item.disabled}
-            onPress={() => {
-              onClose();
-              // Tras cerrar la hoja: en iOS un Alert lanzado mientras el modal se cierra no se muestra
-              setTimeout(item.onPress, CLOSE_DELAY_MS);
-            }}
-            style={({ pressed }) => [
-              styles.row,
-              pressed && styles.rowPressed,
-              item.disabled && styles.rowDisabled,
-            ]}
-          >
-            <View style={[styles.iconWrap, item.destructive && styles.iconWrapDestructive]}>
-              <Ionicons
-                name={item.icon}
-                size={18}
-                color={item.destructive ? '#C0392B' : '#2B3654'}
-              />
-            </View>
-            <Text style={[styles.rowLabel, item.destructive && styles.rowLabelDestructive]}>
-              {item.label}
-            </Text>
-          </Pressable>
-        ))}
+        {/* Con muchas opciones la lista se desplaza en vez de salirse de la pantalla */}
+        <ScrollView style={[styles.list, { maxHeight: height * 0.6 }]} bounces={false}>
+          {items.map((item) => (
+            <Pressable
+              key={item.key}
+              disabled={item.disabled}
+              onPress={() => {
+                onClose();
+                // Tras cerrar la hoja: en iOS un Alert lanzado mientras el modal se cierra no se muestra
+                setTimeout(item.onPress, CLOSE_DELAY_MS);
+              }}
+              style={({ pressed }) => [
+                styles.row,
+                pressed && styles.rowPressed,
+                item.disabled && styles.rowDisabled,
+              ]}
+            >
+              <View style={[styles.iconWrap, item.destructive && styles.iconWrapDestructive]}>
+                <Ionicons
+                  name={item.icon}
+                  size={18}
+                  color={item.destructive ? '#C0392B' : '#2B3654'}
+                />
+              </View>
+              <Text style={[styles.rowLabel, item.destructive && styles.rowLabelDestructive]}>
+                {item.label}
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+
+        <Pressable onPress={onClose} style={({ pressed }) => [styles.cancel, pressed && styles.rowPressed]}>
+          <Text style={styles.cancelText}>Cancelar</Text>
+        </Pressable>
       </View>
-
-      <Pressable onPress={onClose} style={({ pressed }) => [styles.cancel, pressed && styles.rowPressed]}>
-        <Text style={styles.cancelText}>Cancelar</Text>
-      </Pressable>
-    </View>
-  </Modal>
-);
+    </Overlay>
+  );
+};
 
 const styles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(10, 14, 26, 0.45)',
-  },
   sheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
     backgroundColor: '#FBF8F2',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,

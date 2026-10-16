@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BackHandler,
   Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -27,6 +27,7 @@ import {
 import { SPREAD_HEIGHT } from '../../constants/defaultData';
 import { BlockType, PageBlock, PageSide, ScrapbookSpreadData } from '../../types/scrapbook';
 import { BookPageView } from '../blocks/BookPageView';
+import { Overlay } from '../ui/Overlay';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -48,10 +49,8 @@ const pageNumberOf = (spreadIndex: number, side: PageSide) => spreadIndex * 2 + 
 const COMMIT_DELAY_MS = 250;
 
 /**
- * Márgenes del sistema. Se leen una vez de la ventana en vez de usar un
- * SafeAreaProvider dentro del Modal: en Android (nueva arquitectura) ese
- * proveedor nunca recibía las medidas y no pintaba nada, así que sólo se veía
- * la pantalla oscurecida del Modal.
+ * Márgenes del sistema. La barra de estado de Android es translúcida en esta
+ * app, así que se deja su alto libre arriba.
  */
 const getInsets = () => {
   const insets = initialWindowMetrics?.insets;
@@ -63,22 +62,17 @@ const getInsets = () => {
 };
 
 /**
- * Editor de un pliego a pantalla completa. Antes era una hoja flotante con
- * altura en porcentaje dentro de un Modal transparente, y en Android se
- * quedaba como una franja estrecha a la izquierda en la que no se podía
- * tocar nada. Ahora ocupa toda la pantalla: arriba se ve la página tal como
+ * Editor de un pliego a pantalla completa: arriba se ve la página tal como
  * quedará, en medio sus componentes y abajo un botón fijo para añadir más.
+ *
+ * Se pinta como una capa dentro de la app y no en un <Modal>: en Android el
+ * Modal oscurecía la pantalla y subía una hoja vacía en la que no se podía
+ * tocar nada (ni «Añadir componente»).
  */
 export const PageEditor: React.FC<PageEditorProps> = (props) => (
-  <Modal
-    visible={props.visible}
-    animationType="slide"
-    presentationStyle="fullScreen"
-    statusBarTranslucent
-    onRequestClose={props.onClose}
-  >
+  <Overlay visible={props.visible} onClose={props.onClose} variant="screen">
     <EditorScreen {...props} />
-  </Modal>
+  </Overlay>
 );
 
 const EditorScreen: React.FC<PageEditorProps> = ({
@@ -154,6 +148,16 @@ const EditorScreen: React.FC<PageEditorProps> = ({
     onClose();
   };
 
+  // Atrás de Android: primero cierra el catálogo, no el editor entero
+  useEffect(() => {
+    if (!catalogOpen) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setCatalogOpen(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [catalogOpen]);
+
   useEffect(() => {
     if (visible) {
       setSide(initialSide);
@@ -228,8 +232,8 @@ const EditorScreen: React.FC<PageEditorProps> = ({
   const previewWidth = PAGE_WIDTH * previewScale;
 
   return (
-    <View style={[styles.root, { width }]}>
-      <StatusBar barStyle="dark-content" />
+    <View style={styles.root}>
+      {visible && <StatusBar barStyle="dark-content" />}
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}

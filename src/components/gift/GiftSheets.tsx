@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   Share,
@@ -13,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { formatGiftCode, isCompleteGiftCode } from '../../services/giftCrypto';
+import { Overlay } from '../ui/Overlay';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -64,8 +64,7 @@ export const GiftWrapSheet: React.FC<GiftWrapSheetProps> = ({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar" />
+    <Overlay visible={visible} onClose={onClose}>
       <View style={styles.sheet}>
         <View style={styles.handle} />
         <View style={styles.giftIcon}>
@@ -115,7 +114,7 @@ export const GiftWrapSheet: React.FC<GiftWrapSheetProps> = ({
           <Text style={styles.cancelText}>Listo</Text>
         </Pressable>
       </View>
-    </Modal>
+    </Overlay>
   );
 };
 
@@ -181,12 +180,9 @@ export const GiftCodeSheet: React.FC<GiftCodeSheetProps> = ({ visible, onSubmit,
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar" />
+    <Overlay visible={visible} onClose={onClose}>
+      {/* En Android la ventana ya se encoge con el teclado: sólo iOS necesita ayuda */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.sheet}>
           <View style={styles.handle} />
           <View style={styles.giftIcon}>
@@ -237,20 +233,12 @@ export const GiftCodeSheet: React.FC<GiftCodeSheetProps> = ({ visible, onSubmit,
           </Pressable>
         </View>
       </KeyboardAvoidingView>
-    </Modal>
+    </Overlay>
   );
 };
 
 const styles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(10, 14, 26, 0.45)',
-  },
   sheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
     backgroundColor: '#FBF8F2',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
