@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -6,21 +6,29 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
   BLOCK_CATALOG,
   CATALOG_ORDER,
+  PAGE_WIDTH,
   STICKER_OPTIONS,
   createBlock,
   fitsInPage,
   pageFill,
 } from '../../constants/blockCatalog';
+import { SPREAD_HEIGHT } from '../../constants/defaultData';
 import { BlockType, PageBlock, PageSide, ScrapbookSpreadData } from '../../types/scrapbook';
+import { BookPageView } from '../blocks/BookPageView';
+
+type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
 interface PageEditorProps {
   visible: boolean;
@@ -32,14 +40,32 @@ interface PageEditorProps {
   onClose: () => void;
 }
 
-const SIDE_LABEL: Record<PageSide, string> = { left: 'Izquierda', right: 'Derecha' };
+const SIDE_LABEL: Record<PageSide, string> = { left: 'izquierda', right: 'derecha' };
 const otherSide = (side: PageSide): PageSide => (side === 'left' ? 'right' : 'left');
+const pageNumberOf = (spreadIndex: number, side: PageSide) => spreadIndex * 2 + (side === 'left' ? 1 : 2);
 
 /**
- * Editor de un pliego: el usuario elige qué componentes van en cada página,
- * en qué orden, con qué textos y fotos. Sólo se ofrecen los que caben.
+ * Editor de un pliego a pantalla completa. Antes era una hoja flotante con
+ * altura en porcentaje dentro de un Modal transparente, y en Android se
+ * quedaba como una franja estrecha a la izquierda en la que no se podía
+ * tocar nada. Ahora ocupa toda la pantalla: arriba se ve la página tal como
+ * quedará, en medio sus componentes y abajo un botón fijo para añadir más.
  */
-export const PageEditor: React.FC<PageEditorProps> = ({
+export const PageEditor: React.FC<PageEditorProps> = (props) => (
+  <Modal
+    visible={props.visible}
+    animationType="slide"
+    presentationStyle="fullScreen"
+    statusBarTranslucent
+    onRequestClose={props.onClose}
+  >
+    <SafeAreaProvider>
+      <EditorScreen {...props} />
+    </SafeAreaProvider>
+  </Modal>
+);
+
+const EditorScreen: React.FC<PageEditorProps> = ({
   visible,
   spread,
   spreadIndex,
@@ -48,39 +74,52 @@ export const PageEditor: React.FC<PageEditorProps> = ({
   onPickPhoto,
   onClose,
 }) => {
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
   const [side, setSide] = useState<PageSide>(initialSide);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     if (visible) {
       setSide(initialSide);
       setExpandedId(null);
+      setCatalogOpen(false);
     }
   }, [visible, initialSide]);
 
   const blocks = spread[side].blocks;
   const fill = pageFill(blocks);
-  const pageNumber = spreadIndex * 2 + (side === 'left' ? 1 : 2);
+  const nothingFits = CATALOG_ORDER.every((type) => !fitsInPage([...blocks, createBlock(type)]));
+
+  // En Android con la barra translúcida el inset superior puede llegar a 0
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? StatusBar.currentHeight ?? 24 : 0);
 
   const setBlocks = (target: PageSide, next: PageBlock[]) =>
     onChange({ ...spread, [target]: { blocks: next } });
 
   const updateBlock = (id: string, patch: Partial<PageBlock>) =>
-    setBlocks(
-      side,
-      blocks.map((b) => (b.id === id ? { ...b, ...patch } : b))
-    );
+    setBlocks(side, blocks.map((b) => (b.id === id ? { ...b, ...patch } : b)));
 
-  const move = (index: number, delta: number) => {
+  const swapped = (index: number, delta: number) => {
     const target = index + delta;
-    if (target < 0 || target >= blocks.length) return;
+    if (target < 0 || target >= blocks.length) return null;
     const next = [...blocks];
     [next[index], next[target]] = [next[target], next[index]];
     // Reordenar puede juntar dos medios en una fila (o separarlos): sólo si sigue cabiendo
-    if (fitsInPage(next)) setBlocks(side, next);
+    return fitsInPage(next) ? next : null;
   };
 
-  const remove = (id: string) => setBlocks(side, blocks.filter((b) => b.id !== id));
+  const move = (index: number, delta: number) => {
+    const next = swapped(index, delta);
+    if (next) setBlocks(side, next);
+  };
+
+  const remove = (id: string) => {
+    setBlocks(side, blocks.filter((b) => b.id !== id));
+    if (expandedId === id) setExpandedId(null);
+  };
 
   const moveToOtherPage = (block: PageBlock) => {
     const other = otherSide(side);
@@ -96,216 +135,291 @@ export const PageEditor: React.FC<PageEditorProps> = ({
     const block = createBlock(type);
     setBlocks(side, [...blocks, block]);
     setExpandedId(block.id);
+    setCatalogOpen(false);
+    // El nuevo queda al final de la lista: se lleva a la vista
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
   };
 
-  const canSwap = (index: number, delta: number) => {
-    const target = index + delta;
-    if (target < 0 || target >= blocks.length) return false;
-    const next = [...blocks];
-    [next[index], next[target]] = [next[target], next[index]];
-    return fitsInPage(next);
+  const changeSide = (s: PageSide) => {
+    setSide(s);
+    setExpandedId(null);
   };
+
+  // Vista previa: la página real, escalada para ocupar como mucho ~28% del alto
+  const previewHeight = Math.min(250, Math.max(150, height * 0.28));
+  const previewScale = previewHeight / SPREAD_HEIGHT;
+  const previewWidth = PAGE_WIDTH * previewScale;
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar editor" />
+    <View style={[styles.root, { width }]}>
+      <StatusBar barStyle="dark-content" />
       <KeyboardAvoidingView
+        style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.sheetWrapper}
       >
-        <View style={styles.sheet}>
-          <View style={styles.handle} />
-
-          {/* ---------- Encabezado ---------- */}
-          <View style={styles.header}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.title}>Diseña tu pliego {spreadIndex + 1}</Text>
-              <Text style={styles.subtitle}>Elige los componentes y su orden</Text>
-            </View>
-            <Pressable onPress={onClose} style={styles.doneButton} hitSlop={6}>
-              <Text style={styles.doneText}>Listo</Text>
-            </Pressable>
+        {/* ---------- Barra superior ---------- */}
+        <View style={[styles.topBar, { paddingTop: topInset + 8 }]}>
+          <View style={styles.flex}>
+            <Text style={styles.title}>Diseñar pliego {spreadIndex + 1}</Text>
+            <Text style={styles.subtitle}>
+              Págs. {pageNumberOf(spreadIndex, 'left')}–{pageNumberOf(spreadIndex, 'right')} · se guarda solo
+            </Text>
           </View>
-
-          {/* ---------- Página izquierda / derecha ---------- */}
-          <View style={styles.segmented}>
-            {(['left', 'right'] as PageSide[]).map((s) => {
-              const active = s === side;
-              return (
-                <Pressable
-                  key={s}
-                  onPress={() => {
-                    setSide(s);
-                    setExpandedId(null);
-                  }}
-                  style={[styles.segment, active && styles.segmentActive]}
-                  accessibilityState={{ selected: active }}
-                >
-                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
-                    {SIDE_LABEL[s]} · pág. {spreadIndex * 2 + (s === 'left' ? 1 : 2)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {/* ---------- Espacio usado ---------- */}
-          <View style={styles.capacityRow}>
-            <Text style={styles.capacityLabel}>Espacio usado en la pág. {pageNumber}</Text>
-            <Text style={styles.capacityValue}>{Math.round(Math.min(1, fill) * 100)}%</Text>
-          </View>
-          <View style={styles.capacityTrack}>
-            <View
-              style={[
-                styles.capacityFill,
-                { width: `${Math.min(100, fill * 100)}%` },
-                fill > 0.9 && styles.capacityFillFull,
-              ]}
-            />
-          </View>
-
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
+          <Pressable
+            onPress={onClose}
+            style={({ pressed }) => [styles.doneButton, pressed && styles.pressed]}
+            accessibilityLabel="Terminar de diseñar"
+            hitSlop={8}
           >
-            {/* ---------- Componentes de la página ---------- */}
-            <Text style={styles.sectionTitle}>En esta página</Text>
-            {blocks.length === 0 && (
-              <Text style={styles.emptyHint}>
-                La página está en blanco. Añade componentes desde el catálogo de abajo.
-              </Text>
-            )}
-            {blocks.map((block, index) => {
-              const def = BLOCK_CATALOG[block.type];
-              const expanded = expandedId === block.id;
-              const fitsOther = fitsInPage([...spread[otherSide(side)].blocks, block]);
-              const preview =
-                block.type === 'sticker'
-                  ? STICKER_OPTIONS.find((o) => o.kind === block.sticker)?.label
-                  : block.text.split('\n')[0];
-              return (
-                <View key={block.id} style={[styles.blockCard, expanded && styles.blockCardExpanded]}>
-                  <Pressable
-                    onPress={() => setExpandedId(expanded ? null : block.id)}
-                    style={styles.blockRow}
-                  >
-                    <View style={styles.blockIcon}>
-                      <Ionicons name={def.icon} size={18} color="#2B3654" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.blockLabel}>{def.label}</Text>
-                      {!!preview && (
-                        <Text style={styles.blockPreview} numberOfLines={1}>
-                          {preview}
-                        </Text>
-                      )}
-                    </View>
-                    <IconButton
-                      icon="chevron-up"
-                      label="Subir"
-                      disabled={!canSwap(index, -1)}
-                      onPress={() => move(index, -1)}
-                    />
-                    <IconButton
-                      icon="chevron-down"
-                      label="Bajar"
-                      disabled={!canSwap(index, 1)}
-                      onPress={() => move(index, 1)}
-                    />
-                    <IconButton
-                      icon="trash-outline"
-                      label="Quitar"
-                      destructive
-                      onPress={() => remove(block.id)}
-                    />
-                  </Pressable>
+            <Ionicons name="checkmark" size={18} color="#FFF" />
+            <Text style={styles.doneText}>Listo</Text>
+          </Pressable>
+        </View>
 
-                  {expanded && (
-                    <View style={styles.blockEditor}>
-                      {def.photoCount > 0 && (
+        {/* ---------- Página izquierda / derecha ---------- */}
+        <View style={styles.tabs}>
+          {(['left', 'right'] as PageSide[]).map((s) => {
+            const active = s === side;
+            const sideFill = Math.min(1, pageFill(spread[s].blocks));
+            return (
+              <Pressable
+                key={s}
+                onPress={() => changeSide(s)}
+                style={[styles.tab, active && styles.tabActive]}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: active }}
+              >
+                <Text style={[styles.tabTitle, active && styles.tabTitleActive]}>
+                  Pág. {pageNumberOf(spreadIndex, s)}
+                </Text>
+                <Text style={styles.tabSub}>{SIDE_LABEL[s]}</Text>
+                <View style={styles.tabTrack}>
+                  <View
+                    style={[
+                      styles.tabFill,
+                      { width: `${sideFill * 100}%` },
+                      sideFill > 0.9 && styles.capacityFull,
+                    ]}
+                  />
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <ScrollView
+          ref={scrollRef}
+          style={styles.flex}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+        >
+          {/* ---------- Vista previa en vivo ---------- */}
+          <View style={styles.previewWrap}>
+            <View
+              style={[styles.previewPaper, { width: previewWidth, height: previewHeight }]}
+            >
+              <View
+                style={{
+                  position: 'absolute',
+                  width: PAGE_WIDTH,
+                  height: SPREAD_HEIGHT,
+                  left: (previewWidth - PAGE_WIDTH) / 2,
+                  top: (previewHeight - SPREAD_HEIGHT) / 2,
+                  transform: [{ scale: previewScale }],
+                }}
+              >
+                <BookPageView
+                  page={spread[side]}
+                  side={side}
+                  pageNumber={pageNumberOf(spreadIndex, side)}
+                  onPressPhoto={onPickPhoto}
+                  onPressEmpty={() => setCatalogOpen(true)}
+                />
+              </View>
+            </View>
+            <Text style={styles.previewHint}>
+              {blocks.length === 0
+                ? 'Página en blanco: añade tu primer componente'
+                : `Así se verá · ${Math.round(Math.min(1, fill) * 100)}% del espacio usado`}
+            </Text>
+          </View>
+
+          {/* ---------- Componentes de la página ---------- */}
+          {blocks.length > 0 && <Text style={styles.sectionTitle}>En esta página</Text>}
+          {blocks.map((block, index) => {
+            const def = BLOCK_CATALOG[block.type];
+            const expanded = expandedId === block.id;
+            const fitsOther = fitsInPage([...spread[otherSide(side)].blocks, block]);
+            const preview =
+              block.type === 'sticker'
+                ? STICKER_OPTIONS.find((o) => o.kind === block.sticker)?.label
+                : block.text.split('\n')[0];
+            return (
+              <View key={block.id} style={[styles.card, expanded && styles.cardExpanded]}>
+                <Pressable
+                  onPress={() => setExpandedId(expanded ? null : block.id)}
+                  style={({ pressed }) => [styles.cardRow, pressed && styles.rowPressed]}
+                  accessibilityLabel={`${def.label}: ${expanded ? 'cerrar' : 'editar'}`}
+                >
+                  <View style={styles.cardIcon}>
+                    <Ionicons name={def.icon} size={20} color="#2B3654" />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardLabel}>{def.label}</Text>
+                    <Text style={styles.cardPreview} numberOfLines={1}>
+                      {preview || (def.photoCount > 0 ? 'Toca para poner fotos' : 'Toca para editar')}
+                    </Text>
+                  </View>
+                  <Ionicons name={expanded ? 'chevron-up' : 'create-outline'} size={20} color="#7383AD" />
+                </Pressable>
+
+                {expanded && (
+                  <View style={styles.cardEditor}>
+                    {def.photoCount > 0 && (
+                      <View>
+                        <Text style={styles.fieldLabel}>
+                          {def.photoCount > 1 ? 'Fotos' : 'Foto'}
+                        </Text>
                         <View style={styles.photoRow}>
                           {block.photos.map((uri, i) => (
                             <Pressable
                               key={i}
                               onPress={() => onPickPhoto(side, block.id, i)}
-                              style={styles.photoThumb}
+                              style={({ pressed }) => [styles.photoThumb, pressed && styles.pressed]}
                               accessibilityLabel={`Elegir foto ${i + 1}`}
                             >
                               {uri ? (
                                 <Image source={{ uri }} style={styles.photoThumbImage} />
                               ) : (
-                                <Ionicons name="add" size={22} color="#7383AD" />
+                                <>
+                                  <Ionicons name="image-outline" size={22} color="#7383AD" />
+                                  <Text style={styles.photoThumbText}>Elegir</Text>
+                                </>
                               )}
                             </Pressable>
                           ))}
-                          <Text style={styles.photoHint}>
-                            Toca {def.photoCount > 1 ? 'un recuadro' : 'el recuadro'} para elegir la foto
-                          </Text>
                         </View>
-                      )}
+                      </View>
+                    )}
 
-                      {def.textLabel && (
-                        <Field
-                          label={def.textLabel}
-                          value={block.text}
-                          multiline={block.type === 'loveLabels' || block.type === 'note'}
-                          onChangeText={(text) => updateBlock(block.id, { text })}
-                        />
-                      )}
-                      {def.subtitleLabel && (
-                        <Field
-                          label={def.subtitleLabel}
-                          value={block.subtitle}
-                          multiline={block.type === 'song'}
-                          onChangeText={(subtitle) => updateBlock(block.id, { subtitle })}
-                        />
-                      )}
+                    {def.textLabel && (
+                      <Field
+                        label={def.textLabel}
+                        value={block.text}
+                        multiline={block.type === 'loveLabels' || block.type === 'note'}
+                        onChangeText={(text) => updateBlock(block.id, { text })}
+                      />
+                    )}
+                    {def.subtitleLabel && (
+                      <Field
+                        label={def.subtitleLabel}
+                        value={block.subtitle}
+                        multiline={block.type === 'song'}
+                        onChangeText={(subtitle) => updateBlock(block.id, { subtitle })}
+                      />
+                    )}
 
-                      {block.type === 'sticker' && (
-                        <View style={styles.chipsRow}>
-                          {STICKER_OPTIONS.map((opt) => {
-                            const active = block.sticker === opt.kind;
-                            return (
-                              <Pressable
-                                key={opt.kind}
-                                onPress={() => updateBlock(block.id, { sticker: opt.kind })}
-                                style={[styles.chip, active && styles.chipActive]}
-                              >
-                                <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                                  {opt.label}
-                                </Text>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      )}
+                    {block.type === 'sticker' && (
+                      <View style={styles.chipsRow}>
+                        {STICKER_OPTIONS.map((opt) => {
+                          const active = block.sticker === opt.kind;
+                          return (
+                            <Pressable
+                              key={opt.kind}
+                              onPress={() => updateBlock(block.id, { sticker: opt.kind })}
+                              style={[styles.chip, active && styles.chipActive]}
+                            >
+                              <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                                {opt.label}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    )}
 
-                      <Pressable
+                    {/* Acciones grandes, fáciles de tocar con el pulgar */}
+                    <View style={styles.actionsRow}>
+                      <ActionButton
+                        icon="arrow-up"
+                        label="Subir"
+                        disabled={!swapped(index, -1)}
+                        onPress={() => move(index, -1)}
+                      />
+                      <ActionButton
+                        icon="arrow-down"
+                        label="Bajar"
+                        disabled={!swapped(index, 1)}
+                        onPress={() => move(index, 1)}
+                      />
+                      <ActionButton
+                        icon={side === 'left' ? 'arrow-forward' : 'arrow-back'}
+                        label={`A pág. ${pageNumberOf(spreadIndex, otherSide(side))}`}
                         disabled={!fitsOther}
                         onPress={() => moveToOtherPage(block)}
-                        style={[styles.moveButton, !fitsOther && styles.disabled]}
-                      >
-                        <Ionicons
-                          name={side === 'left' ? 'arrow-forward' : 'arrow-back'}
-                          size={15}
-                          color="#2B3654"
-                        />
-                        <Text style={styles.moveButtonText}>
-                          {fitsOther
-                            ? `Mover a la página ${SIDE_LABEL[otherSide(side)].toLowerCase()}`
-                            : 'No cabe en la otra página'}
-                        </Text>
-                      </Pressable>
+                      />
+                      <ActionButton
+                        icon="trash-outline"
+                        label="Quitar"
+                        destructive
+                        onPress={() => remove(block.id)}
+                      />
                     </View>
-                  )}
-                </View>
-              );
-            })}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </ScrollView>
 
-            {/* ---------- Catálogo ---------- */}
-            <Text style={[styles.sectionTitle, { marginTop: 18 }]}>Añadir componente</Text>
-            <View style={styles.catalogGrid}>
+        {/* ---------- Botón fijo: añadir componente ---------- */}
+        <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <Pressable
+            onPress={() => setCatalogOpen(true)}
+            disabled={nothingFits}
+            style={({ pressed }) => [
+              styles.addButton,
+              nothingFits && styles.disabled,
+              pressed && styles.pressed,
+            ]}
+            accessibilityLabel="Añadir componente"
+          >
+            <Ionicons name={nothingFits ? 'checkmark-circle-outline' : 'add'} size={22} color="#FFF" />
+            <Text style={styles.addButtonText}>
+              {nothingFits ? 'Página llena' : 'Añadir componente'}
+            </Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+
+      {/* ---------- Catálogo (dentro de la misma pantalla: sin Modal anidado) ---------- */}
+      {catalogOpen && (
+        <View style={StyleSheet.absoluteFill}>
+          <Pressable
+            style={styles.backdrop}
+            onPress={() => setCatalogOpen(false)}
+            accessibilityLabel="Cerrar catálogo"
+          />
+          <View
+            style={[
+              styles.catalogSheet,
+              { maxHeight: height * 0.78, paddingBottom: Math.max(insets.bottom, 14) },
+            ]}
+          >
+            <View style={styles.handle} />
+            <View style={styles.catalogHeader}>
+              <Text style={styles.catalogTitle}>Añadir a la pág. {pageNumberOf(spreadIndex, side)}</Text>
+              <Pressable
+                onPress={() => setCatalogOpen(false)}
+                style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}
+                accessibilityLabel="Cerrar"
+                hitSlop={8}
+              >
+                <Ionicons name="close" size={20} color="#2B3654" />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.catalogGrid}>
               {CATALOG_ORDER.map((type) => {
                 const def = BLOCK_CATALOG[type];
                 const fits = fitsInPage([...blocks, createBlock(type)]);
@@ -316,13 +430,14 @@ export const PageEditor: React.FC<PageEditorProps> = ({
                     onPress={() => add(type)}
                     style={({ pressed }) => [
                       styles.catalogCard,
+                      { width: (width - 32 - 10) / 2 },
                       pressed && styles.pressed,
                       !fits && styles.disabled,
                     ]}
                     accessibilityLabel={`Añadir ${def.label}`}
                   >
                     <View style={styles.catalogIcon}>
-                      <Ionicons name={def.icon} size={20} color="#8B1E24" />
+                      <Ionicons name={def.icon} size={22} color="#8B1E24" />
                     </View>
                     <Text style={styles.catalogLabel}>{def.label}</Text>
                     <Text style={styles.catalogDescription} numberOfLines={2}>
@@ -334,16 +449,16 @@ export const PageEditor: React.FC<PageEditorProps> = ({
                   </Pressable>
                 );
               })}
-            </View>
-          </ScrollView>
+            </ScrollView>
+          </View>
         </View>
-      </KeyboardAvoidingView>
-    </Modal>
+      )}
+    </View>
   );
 };
 
-const IconButton: React.FC<{
-  icon: React.ComponentProps<typeof Ionicons>['name'];
+const ActionButton: React.FC<{
+  icon: IconName;
   label: string;
   onPress: () => void;
   disabled?: boolean;
@@ -352,11 +467,21 @@ const IconButton: React.FC<{
   <Pressable
     onPress={onPress}
     disabled={disabled}
-    hitSlop={4}
     accessibilityLabel={label}
-    style={({ pressed }) => [styles.iconButton, pressed && styles.pressed, disabled && styles.disabled]}
+    style={({ pressed }) => [
+      styles.actionButton,
+      destructive && styles.actionButtonDestructive,
+      pressed && styles.pressed,
+      disabled && styles.disabled,
+    ]}
   >
     <Ionicons name={icon} size={18} color={destructive ? '#C0392B' : '#2B3654'} />
+    <Text
+      style={[styles.actionLabel, destructive && styles.actionLabelDestructive]}
+      numberOfLines={1}
+    >
+      {label}
+    </Text>
   </Pressable>
 );
 
@@ -379,195 +504,188 @@ const Field: React.FC<{
   </View>
 );
 
+const SERIF = Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' });
+
 const styles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(10, 14, 28, 0.45)',
-  },
-  sheetWrapper: {
+  root: {
     flex: 1,
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    maxHeight: '88%',
     backgroundColor: '#F7F5F0',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: 16,
-    paddingTop: 8,
   },
-  handle: {
-    alignSelf: 'center',
-    width: 40,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: 'rgba(43, 54, 84, 0.2)',
-    marginBottom: 10,
+  flex: {
+    flex: 1,
   },
-  header: {
+
+  /* --- Barra superior --- */
+  topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
   },
   title: {
-    fontSize: 19,
+    fontSize: 20,
     fontWeight: '700',
     fontStyle: 'italic',
-    fontFamily: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
+    fontFamily: SERIF,
     color: '#2B3654',
   },
   subtitle: {
-    fontSize: 13,
+    fontSize: 12.5,
     color: '#6B7390',
     marginTop: 2,
   },
   doneButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: '#2B3654',
     paddingHorizontal: 18,
-    paddingVertical: 9,
-    borderRadius: 18,
+    height: 44,
+    borderRadius: 22,
   },
   doneText: {
     color: '#FFF',
     fontWeight: '700',
-    fontSize: 14,
+    fontSize: 15,
   },
-  segmented: {
+
+  /* --- Pestañas de página --- */
+  tabs: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(43, 54, 84, 0.08)',
-    borderRadius: 14,
-    padding: 3,
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 6,
   },
-  segment: {
+  tab: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 11,
-    alignItems: 'center',
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: 'rgba(43, 54, 84, 0.06)',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
   },
-  segmentActive: {
+  tabActive: {
     backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
+    borderColor: '#2B3654',
   },
-  segmentText: {
-    fontSize: 13,
-    fontWeight: '600',
+  tabTitle: {
+    fontSize: 15,
+    fontWeight: '700',
     color: '#6B7390',
   },
-  segmentTextActive: {
+  tabTitleActive: {
     color: '#2B3654',
-    fontWeight: '700',
   },
-  capacityRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 12,
-    marginBottom: 6,
-  },
-  capacityLabel: {
+  tabSub: {
     fontSize: 12,
-    color: '#6B7390',
-    fontWeight: '600',
+    color: '#8A90A6',
   },
-  capacityValue: {
-    fontSize: 12,
-    color: '#2B3654',
-    fontWeight: '700',
-  },
-  capacityTrack: {
-    height: 6,
-    borderRadius: 3,
+  tabTrack: {
+    height: 4,
+    borderRadius: 2,
     backgroundColor: 'rgba(43, 54, 84, 0.1)',
     overflow: 'hidden',
+    marginTop: 6,
   },
-  capacityFill: {
+  tabFill: {
     height: '100%',
     backgroundColor: '#7383AD',
   },
-  capacityFillFull: {
+  capacityFull: {
     backgroundColor: '#8B1E24',
   },
-  scroll: {
+
+  /* --- Contenido --- */
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  previewWrap: {
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  previewPaper: {
+    backgroundColor: '#FDFBF2',
+    borderRadius: 6,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(138, 119, 96, 0.25)',
+    shadowColor: '#2B2014',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  previewHint: {
+    fontSize: 12.5,
+    color: '#6B7390',
     marginTop: 8,
   },
-  scrollContent: {
-    paddingBottom: 36,
-  },
   sectionTitle: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '700',
     color: '#2B3654',
     textTransform: 'uppercase',
     letterSpacing: 0.6,
-    marginTop: 8,
+    marginTop: 6,
     marginBottom: 8,
   },
-  emptyHint: {
-    fontSize: 13,
-    color: '#6B7390',
-    lineHeight: 18,
-  },
-  blockCard: {
+  card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    marginBottom: 8,
+    borderRadius: 16,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: 'rgba(43, 54, 84, 0.08)',
+    overflow: 'hidden',
   },
-  blockCardExpanded: {
-    borderColor: 'rgba(115, 131, 173, 0.6)',
+  cardExpanded: {
+    borderColor: 'rgba(43, 54, 84, 0.45)',
   },
-  blockRow: {
+  cardRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 10,
-    gap: 6,
+    gap: 12,
+    paddingHorizontal: 14,
+    minHeight: 60,
   },
-  blockIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
+  rowPressed: {
+    backgroundColor: '#F3F1EC',
+  },
+  cardIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     backgroundColor: 'rgba(115, 131, 173, 0.15)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 4,
   },
-  blockLabel: {
-    fontSize: 14,
+  cardLabel: {
+    fontSize: 15.5,
     fontWeight: '700',
     color: '#2B3654',
   },
-  blockPreview: {
-    fontSize: 12,
+  cardPreview: {
+    fontSize: 13,
     color: '#6B7390',
     marginTop: 1,
   },
-  iconButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(43, 54, 84, 0.06)',
-  },
-  blockEditor: {
-    paddingHorizontal: 12,
-    paddingBottom: 12,
-    gap: 10,
+  cardEditor: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    gap: 12,
   },
   photoRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 8,
+    gap: 10,
+    marginTop: 6,
   },
   photoThumb: {
-    width: 56,
-    height: 56,
-    borderRadius: 10,
+    width: 72,
+    height: 72,
+    borderRadius: 12,
     backgroundColor: 'rgba(115, 131, 173, 0.12)',
     borderWidth: 1,
     borderColor: 'rgba(115, 131, 173, 0.35)',
@@ -579,102 +697,181 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  photoHint: {
-    flexBasis: '100%',
-    fontSize: 12,
-    color: '#6B7390',
+  photoThumbText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#7383AD',
+    marginTop: 2,
   },
   field: {
-    gap: 4,
+    gap: 6,
   },
   fieldLabel: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 12.5,
+    fontWeight: '700',
     color: '#6B7390',
   },
   input: {
     backgroundColor: '#F7F5F0',
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(43, 54, 84, 0.12)',
+    borderColor: 'rgba(43, 54, 84, 0.14)',
     paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 10 : 6,
-    fontSize: 15,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    fontSize: 16,
     color: '#2B3654',
   },
   inputMultiline: {
-    minHeight: 64,
+    minHeight: 76,
     textAlignVertical: 'top',
   },
   chipsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
+    gap: 8,
   },
   chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 18,
     backgroundColor: 'rgba(43, 54, 84, 0.06)',
   },
   chipActive: {
     backgroundColor: '#2B3654',
   },
   chipText: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
     color: '#2B3654',
   },
   chipTextActive: {
     color: '#FFF',
   },
-  moveButton: {
+  actionsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 14,
-    backgroundColor: 'rgba(43, 54, 84, 0.06)',
+    gap: 8,
   },
-  moveButtonText: {
-    fontSize: 13,
+  actionButton: {
+    flex: 1,
+    height: 52,
+    borderRadius: 12,
+    backgroundColor: 'rgba(43, 54, 84, 0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    paddingHorizontal: 4,
+  },
+  actionButtonDestructive: {
+    backgroundColor: '#FBECEA',
+  },
+  actionLabel: {
+    fontSize: 11.5,
     fontWeight: '600',
     color: '#2B3654',
+  },
+  actionLabelDestructive: {
+    color: '#C0392B',
+  },
+
+  /* --- Barra inferior --- */
+  bottomBar: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    backgroundColor: '#F7F5F0',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(43, 54, 84, 0.15)',
+  },
+  addButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 54,
+    borderRadius: 16,
+    backgroundColor: '#8B1E24',
+  },
+  addButtonText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+
+  /* --- Catálogo --- */
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(10, 14, 28, 0.45)',
+  },
+  catalogSheet: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#F7F5F0',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 8,
+  },
+  handle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: 'rgba(43, 54, 84, 0.2)',
+    marginBottom: 8,
+  },
+  catalogHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    marginBottom: 10,
+  },
+  catalogTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#2B3654',
+  },
+  closeButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(43, 54, 84, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   catalogGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
   },
   catalogCard: {
-    width: '48.8%',
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 12,
+    borderRadius: 16,
+    padding: 14,
     borderWidth: 1,
     borderColor: 'rgba(43, 54, 84, 0.08)',
   },
   catalogIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     backgroundColor: 'rgba(139, 30, 36, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
   },
   catalogLabel: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
     color: '#2B3654',
   },
   catalogDescription: {
-    fontSize: 12,
+    fontSize: 12.5,
     color: '#6B7390',
     marginTop: 2,
-    minHeight: 32,
+    minHeight: 34,
   },
   catalogSize: {
     fontSize: 10.5,
