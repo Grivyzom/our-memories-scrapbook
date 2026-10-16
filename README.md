@@ -44,9 +44,12 @@
   - Las fotos de la galería se guardan reducidas (máx. 1600 px) en `FileSystem.documentDirectory/scrapbook_photos/`: cargan más rápido y se conservan aunque se borren de la galería.
   - El libro se guarda automáticamente con `AsyncStorage`. Los álbumes del formato anterior se convierten a componentes sin perder sus fotos.
 - 📚 **Pliegos ilimitados**: botón **+ Pliego** para añadir pliegos en blanco, eliminar pliegos y navegar entre ellos con el paso de página.
-- 💌 **Compartir el libro con quien se lo dedicas**:
-  - *Enviar el libro completo*: genera un único archivo `.recuerdos.json` con las fotos incrustadas (reducidas a 1280 px) que se envía por WhatsApp, correo, AirDrop…
-  - Quien lo recibe lo abre en *Compartir › Abrir un libro que me enviaron* y lo ve en modo sólo lectura, con su propia portada y paso de página. Puede volver a su libro cuando quiera.
+- 🎁 **Pensado para regalar**:
+  - Al abrir la app por primera vez se elige qué hacer: *Crear un regalo* (se pregunta para quién es y su nombre aparece en la portada) o *Abrir un regalo*. Quien ya tiene un libro empezado puede seguir con él, y quien recibió uno vuelve directo a verlo.
+  - Los pliegos se añaden con el libro abierto: en el último pliego el botón *siguiente* se convierte en **+**.
+  - *Regalar* envuelve el libro: genera un **código secreto** (`XXXX-XXXX-XXXX`) y un único archivo `.recuerdos.json` **cifrado** con él (XSalsa20-Poly1305 con `tweetnacl`; la clave sale del código con SHA-512 iterado). El archivo se envía por WhatsApp, correo, AirDrop… y el código se le da a la pareja aparte, mejor en persona.
+  - Sin el código el archivo no deja ver nada, aunque se reenvíe o quede en un chat. El código no viaja dentro del archivo y no hace falta ningún servidor. Si el libro cambia se vuelve a enviar con el mismo código.
+  - Quien lo recibe toca *Abrir un regalo*, elige el archivo y escribe el código: lo ve en modo sólo lectura, con su portada y paso de página. Los libros sin cifrar de versiones anteriores se siguen abriendo.
   - *Compartir imagen de este pliego*: captura PNG en alta resolución (`react-native-view-shot`).
 
 ---

@@ -63,6 +63,18 @@ const SPINE_STRIP = COVER_WIDTH * 0.125;
 
 // Parámetros de la "cámara" 3D
 const PERSPECTIVE = 2200;
+/*
+ * Cada cara se dibuja con su propia perspectiva, centrada en ella (es lo único
+ * que Android sabe hacer: la "cámara" de una vista siempre está frente a su
+ * centro). Con el libro girado eso descuadra las caras alejadas del eje de la
+ * cámara —el canto superior e inferior, sobre todo— y el bloque parece hecho
+ * de piezas sueltas. El error crece con la distancia al eje y con la
+ * perspectiva, así que mientras el libro está cerrado (y se puede girar) la
+ * cámara está casi a distancia infinita: todas las caras encajan como un solo
+ * sólido. Al abrir, el libro vuelve a mirar de frente y la perspectiva crece
+ * hasta la del libro abierto, sin saltos.
+ */
+const CLOSED_PERSPECTIVE = 26000;
 const DEFAULT_YAW = -24;
 const DEFAULT_PITCH = 10;
 const MAX_PITCH = 38;
@@ -124,12 +136,13 @@ interface CoverView {
   yaw: number;
   pitch: number;
   hinge: number;
+  perspective: number;
 }
 
 /** Proyecta una cara del bloque; `z` = zIndex (0 para las caras fijas). */
 const frameFor = (geo: FaceGeometry, v: CoverView, z: number, shown = true): FaceFrame => {
   'worklet';
-  const p = projectFace3D(geo, v.yaw, v.pitch, PROJECTION);
+  const p = projectFace3D(geo, v.yaw, v.pitch, { ...PROJECTION, perspective: v.perspective });
   return { visible: p.visible && shown, shade: p.shade, zIndex: z, transform: p.transform };
 };
 
@@ -209,6 +222,8 @@ interface BookCover3DProps {
   revealIndex?: number;
   /** Mismo aspecto que el libro editable (huecos "Elegir foto", página en blanco). */
   editable?: boolean;
+  /** Persona a la que se dedica el libro: aparece en la portada. */
+  dedicatedTo?: string;
 }
 
 export const BookCover3D: React.FC<BookCover3DProps> = ({
@@ -217,6 +232,7 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
   revealSpread,
   revealIndex = 0,
   editable = false,
+  dedicatedTo,
 }) => {
   // Orientación libre del libro controlada por el usuario
   const yaw = useSharedValue(DEFAULT_YAW - 30);
@@ -268,14 +284,18 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
   const view = useDerivedValue<CoverView>(() => {
     const settle = interpolate(openProgress.value, [0, 0.4], [1, 0], Extrapolation.CLAMP);
     const swing = Math.min(1, openProgress.value / COVER_SWING_END);
+    // Se interpola la inversa (la "fuerza" de la perspectiva), no la distancia
+    const inverse = 1 / CLOSED_PERSPECTIVE + (1 / PERSPECTIVE - 1 / CLOSED_PERSPECTIVE) * (1 - settle);
     return {
       yaw: normalizeAngle(yaw.value) * settle,
       pitch: pitch.value * settle + OPEN_BOOK_TILT * (1 - settle),
       hinge: leafFlightCurve(swing) * COVER_OPEN_DEG,
+      perspective: 1 / inverse,
     };
   });
   const viewYaw = useDerivedValue(() => view.value.yaw);
   const viewPitch = useDerivedValue(() => view.value.pitch);
+  const viewPerspective = useDerivedValue(() => view.value.perspective);
   // Con el libro cerrado no hay nada que ordenar: no se recalcula al girarlo
   const order = useDerivedValue(() =>
     openProgress.value > 0 ? stackOrder(view.value.hinge, openProgress.value) : CLOSED_ORDER
@@ -403,6 +423,7 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
                 order={order}
                 yaw={viewYaw}
                 pitch={viewPitch}
+                perspective={viewPerspective}
                 // La última en caer queda encima del bloque izquierdo: lleva la página izquierda
                 backContent={
                   i === OPEN_LEAVES - 1 && revealSpread ? (
@@ -434,7 +455,7 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
 
             {/* ---------- Tapa: portada exterior ---------- */}
             <ProjectedFace project={projectCoverFront} style={centered(W, H)} {...FACE}>
-              <FrontCoverArt />
+              <FrontCoverArt dedicatedTo={dedicatedTo} />
             </ProjectedFace>
           </Animated.View>
         </Animated.View>
@@ -467,6 +488,7 @@ interface OpeningLeafProps {
   order: SharedValue<number[]>;
   yaw: SharedValue<number>;
   pitch: SharedValue<number>;
+  perspective: SharedValue<number>;
   backContent?: React.ReactNode;
 }
 
@@ -476,6 +498,7 @@ const OpeningLeaf = React.memo(function OpeningLeaf({
   order,
   yaw,
   pitch,
+  perspective,
   backContent,
 }: OpeningLeafProps) {
   // Hojas apiladas bajo la tapa: cada una un poco más hundida en el bloque
@@ -504,6 +527,7 @@ const OpeningLeaf = React.memo(function OpeningLeaf({
     presence,
     yaw,
     pitch,
+    perspective,
     projection: PROJECTION,
     stageWidth: W,
     stageHeight: H,
@@ -561,7 +585,7 @@ const RevealedPage: React.FC<{
 
 /* ============================== ARTE DE CADA CARA ============================== */
 
-const FrontCoverArt: React.FC = () => (
+const FrontCoverArt: React.FC<{ dedicatedTo?: string }> = React.memo(({ dedicatedTo }) => (
   <View style={styles.coverBody}>
     {/* Franja de cuero burdeos junto al lomo */}
     <View style={styles.burgundySpine}>
@@ -591,6 +615,13 @@ const FrontCoverArt: React.FC = () => (
           <Text style={styles.cursiveCoverSubtitle}>Our Memories</Text>
         </View>
       </View>
+      {dedicatedTo ? (
+        <View style={styles.dedicationWrapper}>
+          <Text style={styles.dedicationText} numberOfLines={1}>
+            para {dedicatedTo}
+          </Text>
+        </View>
+      ) : null}
     </View>
 
     {/* Brillo satinado de la tela */}
@@ -603,7 +634,7 @@ const FrontCoverArt: React.FC = () => (
       style={StyleSheet.absoluteFill}
     />
   </View>
-);
+));
 
 const BackCoverArt: React.FC = () => (
   <View style={styles.coverBody}>
@@ -814,6 +845,24 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     textAlign: 'center',
     opacity: 0.85,
+  },
+  dedicationWrapper: {
+    position: 'absolute',
+    bottom: '22%',
+    left: 16,
+    right: 16,
+    alignItems: 'center',
+    zIndex: 11,
+  },
+  dedicationText: {
+    fontSize: 17,
+    color: '#6E1419',
+    fontStyle: 'italic',
+    fontFamily: Platform.select({ ios: 'Snell Roundhand', android: 'serif', default: 'serif' }),
+    backgroundColor: 'rgba(251, 246, 230, 0.85)',
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    overflow: 'hidden',
   },
   backHeartWrapper: {
     alignItems: 'center',

@@ -59,6 +59,8 @@ interface InteractiveBookViewportProps {
   closing: boolean;
   /** La cámara ya está en el encuadre de la portada: se puede cerrar la tapa. */
   onReadyToClose: () => void;
+  /** En el último pliego, "siguiente" pasa a añadir uno nuevo (sólo libro editable). */
+  onAddSpread?: () => void;
 }
 
 // Lo que tarda la cámara en volver a "Ambas" antes de que baje la tapa
@@ -150,6 +152,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   interactive,
   closing,
   onReadyToClose,
+  onAddSpread,
 }) => {
   // Arranca en "Ambas Páginas": es el encuadre en el que termina la apertura de la portada
   const [focusZone, setFocusZone] = useState<CameraFocusZone>('full');
@@ -500,6 +503,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const isFlipping = flip !== null;
   const canGoPrev = activeSpreadIndex > 0;
   const canGoNext = activeSpreadIndex < totalSpreads - 1;
+  const showAdd = !canGoNext && !!onAddSpread;
   const isLandscape = focusZone === 'landscape90';
   const activeZone = focusZone === 'center' ? 'full' : focusZone;
 
@@ -660,17 +664,22 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
         </View>
 
         <Pressable
-          onPress={() => turnTo(activeSpreadIndex + 1)}
-          disabled={!canGoNext || isFlipping}
+          onPress={showAdd ? onAddSpread : () => turnTo(activeSpreadIndex + 1)}
+          disabled={(!canGoNext && !showAdd) || isFlipping}
           style={({ pressed }) => [
             styles.navButton,
-            (!canGoNext || isFlipping) && styles.navButtonDisabled,
+            showAdd && styles.navButtonAdd,
+            ((!canGoNext && !showAdd) || isFlipping) && styles.navButtonDisabled,
             pressed && styles.pressed,
           ]}
-          accessibilityLabel="Pliego siguiente"
+          accessibilityLabel={showAdd ? 'Añadir un pliego al final' : 'Pliego siguiente'}
           hitSlop={8}
         >
-          <Ionicons name="chevron-forward" size={22} color="#FFF" />
+          <Ionicons
+            name={showAdd ? 'add' : 'chevron-forward'}
+            size={showAdd ? 26 : 22}
+            color={showAdd ? '#2B3654' : '#FFF'}
+          />
         </Pressable>
       </View>
     </View>
@@ -780,6 +789,9 @@ const styles = StyleSheet.create({
     borderColor: GLASS_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  navButtonAdd: {
+    backgroundColor: '#FFFFFF',
   },
   navButtonDisabled: {
     opacity: 0.35,
