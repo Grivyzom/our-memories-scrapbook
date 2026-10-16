@@ -23,13 +23,12 @@ import {
 import { LeafFace, LeafFaceKind, leafFaceWidth } from './book3d/LeafFace';
 
 /* =========================================================================
- * Hojeado en cascada ("efecto abanico"): al cambiar de pliego varias hojas
- * con grosor real despegan del lomo con un retraso escalonado, se curvan en
- * el aire y caen con un pequeño rebote al otro lado.
+ * Paso de página: una hoja con grosor real despega del lomo, se curva en el
+ * aire y cae con un pequeño rebote al otro lado.
  *
- * Para que la primera hoja muestre el pliego que se abandona y la última el
- * que llega, se usan capturas (react-native-view-shot) del pliego recortadas
- * en tiras, una por segmento de hoja.
+ * El pliego de destino se captura antes de empezar, así que durante todo el
+ * giro se ven sus imágenes: debajo de la hoja que se levanta y en su reverso.
+ * Las capturas (react-native-view-shot) se recortan en tiras, una por segmento.
  * ========================================================================= */
 
 export type FlipDirection = 'next' | 'prev';
@@ -39,6 +38,8 @@ export interface FlipRequest {
   dir: FlipDirection;
   /** Captura del pliego que se abandona (null si no se pudo capturar). */
   oldUri: string | null;
+  /** Captura del pliego de destino (null si no se pudo capturar). */
+  newUri: string | null;
 }
 
 // Escenario = tapa exterior del pliego (ver ScrapbookSpread.outerBookCoverBase)
@@ -50,13 +51,13 @@ const PAGE_WIDTH = SPREAD_WIDTH / 2;
 const SPINE_X = STAGE_WIDTH / 2;
 
 // Coreografía
-const LEAF_COUNT = 4;
+const LEAF_COUNT = 1;
 const SEGMENTS = 6;
 const STAGGER_MS = 80;
 const FLIGHT_MS = 920;
 const MAX_BEND = 54;
 const BOUNCE_GAIN = 300;
-const READY_TIMEOUT_MS = 380;
+const READY_TIMEOUT_MS = 450;
 
 const LEAF_SPEC: LeafSpec = {
   hinge: { x: 0, y: 0, z: 0 },
@@ -80,8 +81,6 @@ const PAPER_BACK = '#F7F1E3';
 
 interface PageFlipOverlayProps {
   request: FlipRequest;
-  /** Captura del pliego de destino, disponible poco después de `onReady`. */
-  newUri: string | null;
   /** La animación cubre ya el pliego viejo: se puede cambiar el contenido de debajo. */
   onReady: () => void;
   onFinished: () => void;
@@ -89,19 +88,18 @@ interface PageFlipOverlayProps {
 
 export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
   request,
-  newUri,
   onReady,
   onFinished,
 }) => {
-  const { dir, oldUri } = request;
+  const { dir, oldUri, newUri } = request;
   const [running, setRunning] = useState(false);
   const presence = useSharedValue(0);
   const loadedCount = useRef(0);
   const readyFired = useRef(false);
 
-  // Imágenes que deben estar decodificadas antes de tapar el pliego: tiras de la
-  // primera hoja + la mitad estática que queda en el lado de llegada
-  const expectedLoads = oldUri ? SEGMENTS + 1 : 0;
+  // Imágenes que deben estar decodificadas antes de empezar: tiras del anverso y
+  // del reverso de la hoja + la mitad estática que queda en el lado de llegada
+  const expectedLoads = (oldUri ? SEGMENTS + 1 : 0) + (newUri ? SEGMENTS : 0);
 
   const markReady = useCallback(() => {
     if (readyFired.current) return;
@@ -164,7 +162,7 @@ export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
             presence={presence}
             frontUri={frontUri}
             backUri={backUri}
-            onImageLoaded={isFirst ? handleImageLoaded : undefined}
+            onImageLoaded={handleImageLoaded}
             onLanded={isLast ? handleLastLanded : undefined}
           />
         );
@@ -243,8 +241,6 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
     const segLen = LEAF_SPEC.length / SEGMENTS;
     const centerX = kind === 'front' ? SPINE_X + (seg + 0.5) * segLen : SPINE_X - (seg + 0.5) * segLen;
     const faceLeft = centerX - w / 2;
-    // Cara que muestra el pliego que se abandona (sólo cuenta para la carga inicial)
-    const showsOldSpread = kind === 'front' ? dir === 'next' : dir === 'prev';
     return (
       <LeafFace
         key={`${kind}-${seg}`}
@@ -258,7 +254,7 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
             uri={uri}
             faceLeft={faceLeft}
             faceTop={PAGE_INSET_Y}
-            onLoadEnd={showsOldSpread ? onImageLoaded : undefined}
+            onLoadEnd={onImageLoaded}
           />
         )}
         {seg === 0 && (

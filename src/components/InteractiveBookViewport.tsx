@@ -9,6 +9,7 @@ import {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
+  runOnJS,
   useSharedValue,
   useAnimatedStyle,
   withRepeat,
@@ -20,7 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   CameraFocusZone,
   PhotoSlotKey,
-  SpreadPhotosMap,
+  ScrapbookSpreadData,
 } from '../types/scrapbook';
 import {
   SPREAD_WIDTH,
@@ -29,20 +30,25 @@ import {
   getFullSpreadScale,
 } from '../constants/defaultData';
 import { ScrapbookSpread } from './ScrapbookSpread';
-import { FlipDirection, FlipRequest, PageFlipOverlay } from './PageFlipOverlay';
+import { FlipRequest, PageFlipOverlay } from './PageFlipOverlay';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
+/** Petición externa de navegación (p. ej. al añadir un pliego nuevo). */
+export interface SpreadNavRequest {
+  id: number;
+  index: number;
+}
+
 interface InteractiveBookViewportProps {
-  photos: SpreadPhotosMap;
+  spreads: ScrapbookSpreadData[];
+  activeSpreadIndex: number;
   onSelectPhotoSlot: (slot: PhotoSlotKey) => void;
   onCloseBook: () => void;
   captureRef: React.RefObject<View>;
-  activeSpreadIndex: number;
-  totalSpreads: number;
-  onPrevSpread: () => void;
-  onNextSpread: () => void;
-  onGoToSpread?: (index: number) => void;
+  /** Se llama cuando la hoja ya tapa el pliego viejo: cambia el pliego activo. */
+  onGoToSpread: (index: number) => void;
+  navRequest?: SpreadNavRequest | null;
 }
 
 const SPRING_CONFIG = {
@@ -61,8 +67,17 @@ const TILT_BY_ZONE: Record<CameraFocusZone, number> = {
 };
 const CAMERA_PERSPECTIVE = 1500;
 
+// Deslizar horizontalmente (en "Ambas") pasa de página
+const SWIPE_MIN_DISTANCE = 60;
+const SWIPE_MIN_VELOCITY = 350;
+
+// Tiempo para que el pliego de destino se pinte antes de capturarlo
+const PRELOAD_SETTLE_MS = 220;
+
 // Grosor visible de cada bloque de hojas según cuántos pliegos quedan a cada lado
 const stackLayersFor = (sheets: number) => Math.min(8, 2 + sheets);
+
+const MAX_DOTS = 9;
 
 const captureSpread = async (ref: React.RefObject<View>): Promise<string | null> => {
   try {
@@ -73,18 +88,24 @@ const captureSpread = async (ref: React.RefObject<View>): Promise<string | null>
   }
 };
 
+const ZONES: { zone: CameraFocusZone; label: string }[] = [
+  { zone: 'left', label: 'Izq.' },
+  { zone: 'full', label: 'Ambas' },
+  { zone: 'right', label: 'Der.' },
+];
+
 export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = ({
-  photos,
+  spreads,
+  activeSpreadIndex,
   onSelectPhotoSlot,
   onCloseBook,
   captureRef,
-  activeSpreadIndex,
-  totalSpreads,
-  onPrevSpread,
-  onNextSpread,
+  onGoToSpread,
+  navRequest,
 }) => {
   // Arranca en "Ambas Páginas": es el encuadre en el que termina la apertura de la portada
   const [focusZone, setFocusZone] = useState<CameraFocusZone>('full');
+  const totalSpreads = spreads.length;
 
   // Escalas calculadas para adaptarse a cualquier smartphone
   const singlePageScale = Math.min(
@@ -93,7 +114,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   );
   const fullSpreadScale = getFullSpreadScale(SCREEN_WIDTH);
   const rotatedLandscapeScale = Math.min(
-    (SCREEN_HEIGHT * 0.66) / (SPREAD_WIDTH + 28),
+    (SCREEN_HEIGHT * 0.62) / (SPREAD_WIDTH + 28),
     (SCREEN_WIDTH * 0.92) / (SPREAD_HEIGHT + 24)
   );
 
@@ -105,6 +126,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const savedTranslateY = useSharedValue(0);
   const rotationDeg = useSharedValue(0);
   const tiltDeg = useSharedValue(TILT_BY_ZONE.full);
+  const swipeEnabled = useSharedValue(1);
   // Balanceo muy sutil en reposo: el libro "respira" sobre la mesa
   const idleSway = useSharedValue(0);
 
@@ -115,50 +137,129 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const applyCameraZone = (zone: CameraFocusZone) => {
     setFocusZone(zone);
     tiltDeg.value = withSpring(TILT_BY_ZONE[zone], SPRING_CONFIG);
-    if (zone === 'left') {
-      const targetX = SPREAD_WIDTH * 0.23 * singlePageScale;
-      scale.value = withSpring(singlePageScale, SPRING_CONFIG);
-      savedScale.value = singlePageScale;
-      translateX.value = withSpring(targetX, SPRING_CONFIG);
-      savedTranslateX.value = targetX;
-      translateY.value = withSpring(0, SPRING_CONFIG);
-      savedTranslateY.value = 0;
-      rotationDeg.value = withSpring(0, SPRING_CONFIG);
-    } else if (zone === 'center' || zone === 'full') {
-      scale.value = withSpring(fullSpreadScale, SPRING_CONFIG);
-      savedScale.value = fullSpreadScale;
-      translateX.value = withSpring(0, SPRING_CONFIG);
-      savedTranslateX.value = 0;
-      translateY.value = withSpring(0, SPRING_CONFIG);
-      savedTranslateY.value = 0;
-      rotationDeg.value = withSpring(0, SPRING_CONFIG);
-    } else if (zone === 'right') {
-      const targetX = -SPREAD_WIDTH * 0.23 * singlePageScale;
-      scale.value = withSpring(singlePageScale, SPRING_CONFIG);
-      savedScale.value = singlePageScale;
-      translateX.value = withSpring(targetX, SPRING_CONFIG);
-      savedTranslateX.value = targetX;
-      translateY.value = withSpring(0, SPRING_CONFIG);
-      savedTranslateY.value = 0;
-      rotationDeg.value = withSpring(0, SPRING_CONFIG);
+    swipeEnabled.value = zone === 'full' || zone === 'center' ? 1 : 0;
+
+    let targetScale = fullSpreadScale;
+    let targetX = 0;
+    let targetRotation = 0;
+    if (zone === 'left' || zone === 'right') {
+      targetScale = singlePageScale;
+      targetX = (zone === 'left' ? 1 : -1) * SPREAD_WIDTH * 0.23 * singlePageScale;
     } else if (zone === 'landscape90') {
-      scale.value = withSpring(rotatedLandscapeScale, SPRING_CONFIG);
-      savedScale.value = rotatedLandscapeScale;
-      translateX.value = withSpring(0, SPRING_CONFIG);
-      savedTranslateX.value = 0;
-      translateY.value = withSpring(0, SPRING_CONFIG);
-      savedTranslateY.value = 0;
-      rotationDeg.value = withSpring(90, SPRING_CONFIG);
+      targetScale = rotatedLandscapeScale;
+      targetRotation = 90;
     }
+
+    scale.value = withSpring(targetScale, SPRING_CONFIG);
+    savedScale.value = targetScale;
+    translateX.value = withSpring(targetX, SPRING_CONFIG);
+    savedTranslateX.value = targetX;
+    translateY.value = withSpring(0, SPRING_CONFIG);
+    savedTranslateY.value = 0;
+    rotationDeg.value = withSpring(targetRotation, SPRING_CONFIG);
   };
 
-  // Gesto Pan con amortiguación
+  /* ==================== PASO DE PÁGINA ==================== */
+  const [flip, setFlip] = useState<(FlipRequest & { target: number }) | null>(null);
+  const [preloadIndex, setPreloadIndex] = useState<number | null>(null);
+  const preloadRef = useRef<View>(null);
+  const preloadResolver = useRef<((uri: string | null) => void) | null>(null);
+  const flipBusy = useRef(false);
+  const flipCounter = useRef(0);
+  const queuedTarget = useRef<number | null>(null);
+
+  // Refs con el estado más reciente: turnTo se invoca desde gestos y efectos
+  const activeIndexRef = useRef(activeSpreadIndex);
+  const totalRef = useRef(totalSpreads);
+  activeIndexRef.current = activeSpreadIndex;
+  totalRef.current = totalSpreads;
+
+  // Captura el pliego de destino, renderizado oculto bajo el actual
+  useEffect(() => {
+    if (preloadIndex === null || !preloadResolver.current) return;
+    const timer = setTimeout(async () => {
+      const uri = await captureSpread(preloadRef);
+      preloadResolver.current?.(uri);
+      preloadResolver.current = null;
+    }, PRELOAD_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [preloadIndex]);
+
+  const turnTo = useCallback(
+    async (target: number) => {
+      if (target < 0 || target >= totalRef.current) return;
+      if (flipBusy.current) {
+        queuedTarget.current = target;
+        return;
+      }
+      const from = activeIndexRef.current;
+      if (target === from) return;
+      flipBusy.current = true;
+
+      const oldUri = await captureSpread(captureRef);
+      const newUri = await new Promise<string | null>((resolve) => {
+        preloadResolver.current = resolve;
+        setPreloadIndex(target);
+      });
+
+      flipCounter.current += 1;
+      setFlip({
+        id: flipCounter.current,
+        dir: target > from ? 'next' : 'prev',
+        oldUri,
+        newUri,
+        target,
+      });
+    },
+    [captureRef]
+  );
+
+  const swipeTurn = useCallback(
+    (delta: number) => turnTo(activeIndexRef.current + delta),
+    [turnTo]
+  );
+
+  // La hoja ya tapa el pliego viejo: cambiamos el contenido real debajo
+  const handleFlipReady = useCallback(() => {
+    if (flip) onGoToSpread(flip.target);
+  }, [flip, onGoToSpread]);
+
+  const handleFlipFinished = useCallback(() => {
+    flipBusy.current = false;
+    setFlip(null);
+    setPreloadIndex(null);
+    const queued = queuedTarget.current;
+    queuedTarget.current = null;
+    if (queued !== null) turnTo(queued);
+  }, [turnTo]);
+
+  const lastNavId = useRef<number | null>(null);
+  useEffect(() => {
+    if (!navRequest || navRequest.id === lastNavId.current) return;
+    lastNavId.current = navRequest.id;
+    turnTo(navRequest.index);
+  }, [navRequest, turnTo]);
+
+  /* ==================== GESTOS ==================== */
+  // Pan con amortiguación; en "Ambas" un deslizamiento rápido pasa de página
   const panGesture = Gesture.Pan()
     .onUpdate((e) => {
       translateX.value = savedTranslateX.value + e.translationX;
       translateY.value = savedTranslateY.value + e.translationY * 0.6;
     })
-    .onEnd(() => {
+    .onEnd((e) => {
+      const isSwipe =
+        swipeEnabled.value === 1 &&
+        Math.abs(e.translationX) > SWIPE_MIN_DISTANCE &&
+        Math.abs(e.velocityX) > SWIPE_MIN_VELOCITY &&
+        Math.abs(e.translationX) > Math.abs(e.translationY) * 1.4;
+      if (isSwipe) {
+        translateX.value = withSpring(savedTranslateX.value, SPRING_CONFIG);
+        translateY.value = withSpring(savedTranslateY.value, SPRING_CONFIG);
+        runOnJS(swipeTurn)(e.translationX < 0 ? 1 : -1);
+        return;
+      }
+
       const maxOffsetX = (SPREAD_WIDTH * 0.35) * scale.value;
       const maxOffsetY = (SPREAD_HEIGHT * 0.25) * scale.value;
 
@@ -201,203 +302,98 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
     };
   });
 
-  /* ==================== HOJEADO EN CASCADA ==================== */
-  const [flip, setFlip] = useState<FlipRequest | null>(null);
-  const [flipNewUri, setFlipNewUri] = useState<string | null>(null);
-  const flipBusy = useRef(false);
-  const flipCounter = useRef(0);
-
+  /* ==================== UI ==================== */
+  const isFlipping = flip !== null;
   const canGoPrev = activeSpreadIndex > 0;
   const canGoNext = activeSpreadIndex < totalSpreads - 1;
+  const isLandscape = focusZone === 'landscape90';
+  const activeZone = focusZone === 'center' ? 'full' : focusZone;
 
-  const turnPage = useCallback(
-    async (dir: FlipDirection) => {
-      if (flipBusy.current) return;
-      if (dir === 'next' ? !canGoNext : !canGoPrev) return;
-      flipBusy.current = true;
-      const oldUri = await captureSpread(captureRef);
-      flipCounter.current += 1;
-      setFlipNewUri(null);
-      setFlip({ id: flipCounter.current, dir, oldUri });
-    },
-    [canGoNext, canGoPrev, captureRef]
+  const currentSpread = spreads[activeSpreadIndex] || spreads[0];
+  const preloadSpread = preloadIndex !== null ? spreads[preloadIndex] : null;
+  const pageA = activeSpreadIndex * 2 + 1;
+  const pageB = activeSpreadIndex * 2 + 2;
+
+  // Puntos de progreso: ventana deslizante si hay muchos pliegos
+  const dotStart = Math.max(
+    0,
+    Math.min(activeSpreadIndex - Math.floor(MAX_DOTS / 2), totalSpreads - MAX_DOTS)
   );
-
-  // La animación ya tapa el pliego viejo: cambiamos el contenido real debajo y
-  // capturamos el nuevo para que la última hoja aterrice mostrándolo
-  const handleFlipReady = useCallback(() => {
-    if (!flip) return;
-    if (flip.dir === 'next') onNextSpread();
-    else onPrevSpread();
-    const flipId = flip.id;
-    setTimeout(async () => {
-      const uri = await captureSpread(captureRef);
-      if (flipCounter.current === flipId) setFlipNewUri(uri);
-    }, 120);
-  }, [flip, onNextSpread, onPrevSpread, captureRef]);
-
-  const handleFlipFinished = useCallback(() => {
-    flipBusy.current = false;
-    setFlip(null);
-    setFlipNewUri(null);
-  }, []);
-
-  const isFlipping = flip !== null;
-  const prevDisabled = !canGoPrev || isFlipping;
-  const nextDisabled = !canGoNext || isFlipping;
-
-  const handleCycleViewMode = () => {
-    if (focusZone === 'full' || focusZone === 'center') {
-      applyCameraZone('landscape90');
-    } else if (focusZone === 'landscape90') {
-      applyCameraZone('left');
-    } else {
-      applyCameraZone('full');
-    }
-  };
-
-  const pageAStart = activeSpreadIndex * 2 + 1;
-  const pageBEnd = activeSpreadIndex * 2 + 2;
+  const dotCount = Math.min(MAX_DOTS, totalSpreads);
 
   return (
     <View style={styles.viewportWrapper}>
-      {/* ==================== PANEL DE CONTROL SUPERIOR ==================== */}
-      <View style={styles.topControlPanel}>
-        {/* Fila 1: Botón Portada + Selector de Pliego y Páginas */}
-        <View style={styles.topRow}>
-          <Pressable onPress={onCloseBook} style={styles.closeCoverChip}>
-            <Ionicons name="book-outline" size={13} color="#FFF" />
-            <Text style={styles.closeCoverChipText}>Portada</Text>
-          </Pressable>
+      {/* ==================== BARRA SUPERIOR ==================== */}
+      <View style={styles.topBar}>
+        <Pressable
+          onPress={onCloseBook}
+          style={({ pressed }) => [styles.roundButton, pressed && styles.pressed]}
+          accessibilityLabel="Cerrar el cuaderno"
+          hitSlop={6}
+        >
+          <Ionicons name="close" size={20} color="#FFF" />
+        </Pressable>
 
-          <View style={styles.spreadNavChip}>
-            <Pressable
-              onPress={() => turnPage('prev')}
-              disabled={prevDisabled}
-              style={[
-                styles.miniNavBtn,
-                prevDisabled && styles.miniNavBtnDisabled,
-              ]}
-              hitSlop={8}
-            >
-              <Ionicons
-                name="chevron-back"
-                size={14}
-                color={prevDisabled ? 'rgba(255,255,255,0.3)' : '#FFF'}
-              />
-            </Pressable>
-
-            <Text style={styles.spreadNavText}>
-              Pliego {activeSpreadIndex + 1}/{totalSpreads} (Págs. {pageAStart}-{pageBEnd})
-            </Text>
-
-            <Pressable
-              onPress={() => turnPage('next')}
-              disabled={nextDisabled}
-              style={[
-                styles.miniNavBtn,
-                nextDisabled && styles.miniNavBtnDisabled,
-              ]}
-              hitSlop={8}
-            >
-              <Ionicons
-                name="chevron-forward"
-                size={14}
-                color={nextDisabled ? 'rgba(255,255,255,0.3)' : '#FFF'}
-              />
-            </Pressable>
-          </View>
+        <View style={styles.segmented}>
+          {ZONES.map(({ zone, label }) => {
+            const active = activeZone === zone;
+            return (
+              <Pressable
+                key={zone}
+                onPress={() => applyCameraZone(zone)}
+                style={[styles.segment, active && styles.segmentActive]}
+                accessibilityState={{ selected: active }}
+              >
+                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
 
-        {/* Fila 2: Píldoras de Enfoque de Página (Página A, Ambas, Página B) */}
-        <View style={styles.pageZonePills}>
-          <Pressable
-            onPress={() => applyCameraZone('left')}
-            style={[
-              styles.zonePill,
-              focusZone === 'left' && styles.zonePillActive,
-            ]}
-          >
-            <Text
-              style={[
-                styles.zonePillText,
-                focusZone === 'left' && styles.zonePillTextActive,
-              ]}
-            >
-              Pág. A (Izq.)
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => applyCameraZone('full')}
-            style={[
-              styles.zonePill,
-              (focusZone === 'full' || focusZone === 'center') && styles.zonePillActive,
-            ]}
-          >
-            <Text
-              style={[
-                styles.zonePillText,
-                (focusZone === 'full' || focusZone === 'center') && styles.zonePillTextActive,
-              ]}
-            >
-              Ambas Páginas
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => applyCameraZone('right')}
-            style={[
-              styles.zonePill,
-              focusZone === 'right' && styles.zonePillActive,
-            ]}
-          >
-            <Text
-              style={[
-                styles.zonePillText,
-                focusZone === 'right' && styles.zonePillTextActive,
-              ]}
-            >
-              Pág. B (Der.)
-            </Text>
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() => applyCameraZone(isLandscape ? 'full' : 'landscape90')}
+          style={({ pressed }) => [
+            styles.roundButton,
+            isLandscape && styles.roundButtonActive,
+            pressed && styles.pressed,
+          ]}
+          accessibilityLabel={isLandscape ? 'Volver a vista normal' : 'Girar pliego 90 grados'}
+          hitSlop={6}
+        >
+          <Ionicons
+            name="phone-landscape-outline"
+            size={18}
+            color={isLandscape ? '#2B3654' : '#FFF'}
+          />
+        </Pressable>
       </View>
 
-      {/* ==================== BOTONES LATERALES DE CAMBIO DE PÁGINA ==================== */}
-      {/* Botón flotante para ir a la página/pliego anterior */}
-      {canGoPrev && (
-        <Pressable
-          onPress={() => turnPage('prev')}
-          disabled={isFlipping}
-          style={styles.floatingPageTurnBtnLeft}
-          hitSlop={10}
-        >
-          <Ionicons name="chevron-back" size={24} color="#FFF" />
-          <Text style={styles.floatingPageTurnText}>Ant.</Text>
-        </Pressable>
-      )}
-
-      {/* Botón flotante para ir a la página/pliego siguiente */}
-      {canGoNext && (
-        <Pressable
-          onPress={() => turnPage('next')}
-          disabled={isFlipping}
-          style={styles.floatingPageTurnBtnRight}
-          hitSlop={10}
-        >
-          <Ionicons name="chevron-forward" size={24} color="#FFF" />
-          <Text style={styles.floatingPageTurnText}>Sig.</Text>
-        </Pressable>
-      )}
-
-      {/* ==================== ÁREA INTERACTIVA CON GESTOS ==================== */}
+      {/* ==================== LIBRO ==================== */}
       <GestureDetector gesture={composedGesture}>
         <Animated.View style={styles.gestureStage}>
           <Animated.View style={animatedViewportStyle}>
+            {/* Pliego de destino, oculto bajo el actual, para capturarlo antes de girar */}
+            {preloadSpread && preloadIndex !== null && (
+              <View
+                ref={preloadRef}
+                collapsable={false}
+                pointerEvents="none"
+                style={styles.preloadLayer}
+              >
+                <ScrapbookSpread
+                  photos={preloadSpread.photos}
+                  onSelectPhotoSlot={() => {}}
+                  spreadIndex={preloadIndex}
+                  leftStackLayers={stackLayersFor(preloadIndex)}
+                  rightStackLayers={stackLayersFor(totalSpreads - 1 - preloadIndex)}
+                />
+              </View>
+            )}
             <View ref={captureRef} collapsable={false}>
               <ScrapbookSpread
-                photos={photos}
+                photos={currentSpread.photos}
                 onSelectPhotoSlot={onSelectPhotoSlot}
                 spreadIndex={activeSpreadIndex}
                 leftStackLayers={stackLayersFor(activeSpreadIndex)}
@@ -408,7 +404,6 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
               <PageFlipOverlay
                 key={flip.id}
                 request={flip}
-                newUri={flipNewUri}
                 onReady={handleFlipReady}
                 onFinished={handleFlipFinished}
               />
@@ -417,30 +412,67 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
         </Animated.View>
       </GestureDetector>
 
-      {/* Botón flotante inferior: Vista Completa / Rotar Pliego */}
-      <Pressable onPress={handleCycleViewMode} style={styles.floatingModeButton}>
-        <Ionicons
-          name={
-            focusZone === 'full' || focusZone === 'center'
-              ? 'phone-landscape-outline'
-              : focusZone === 'landscape90'
-              ? 'scan-outline'
-              : 'expand-outline'
-          }
-          size={15}
-          color="#FFF"
-        />
-        <Text style={styles.floatingModeButtonText}>
-          {focusZone === 'full' || focusZone === 'center'
-            ? 'Rotar Pliego 90°'
-            : focusZone === 'landscape90'
-            ? 'Enfocar Página A'
-            : 'Vista Completa / Rotar'}
-        </Text>
-      </Pressable>
+      {/* ==================== NAVEGACIÓN INFERIOR ==================== */}
+      <View style={styles.bottomNav}>
+        <Pressable
+          onPress={() => turnTo(activeSpreadIndex - 1)}
+          disabled={!canGoPrev || isFlipping}
+          style={({ pressed }) => [
+            styles.navButton,
+            (!canGoPrev || isFlipping) && styles.navButtonDisabled,
+            pressed && styles.pressed,
+          ]}
+          accessibilityLabel="Pliego anterior"
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-back" size={22} color="#FFF" />
+        </Pressable>
+
+        <View style={styles.pageIndicator}>
+          <Text style={styles.pageIndicatorTitle}>
+            Pliego {activeSpreadIndex + 1} de {totalSpreads}
+          </Text>
+          <Text style={styles.pageIndicatorSub}>
+            Págs. {pageA}–{pageB}
+          </Text>
+          <View style={styles.dotsRow}>
+            {Array.from({ length: dotCount }, (_, i) => {
+              const index = dotStart + i;
+              const active = index === activeSpreadIndex;
+              return (
+                <Pressable
+                  key={index}
+                  onPress={() => turnTo(index)}
+                  hitSlop={5}
+                  accessibilityLabel={`Ir al pliego ${index + 1}`}
+                >
+                  <View style={[styles.dot, active && styles.dotActive]} />
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <Pressable
+          onPress={() => turnTo(activeSpreadIndex + 1)}
+          disabled={!canGoNext || isFlipping}
+          style={({ pressed }) => [
+            styles.navButton,
+            (!canGoNext || isFlipping) && styles.navButtonDisabled,
+            pressed && styles.pressed,
+          ]}
+          accessibilityLabel="Pliego siguiente"
+          hitSlop={8}
+        >
+          <Ionicons name="chevron-forward" size={22} color="#FFF" />
+        </Pressable>
+      </View>
     </View>
   );
 };
+
+const GLASS = 'rgba(20, 27, 46, 0.55)';
+const GLASS_BORDER = 'rgba(255, 255, 255, 0.18)';
 
 const styles = StyleSheet.create({
   viewportWrapper: {
@@ -449,145 +481,65 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  topControlPanel: {
+
+  /* --- Barra superior --- */
+  topBar: {
     position: 'absolute',
-    top: 2,
+    top: 4,
     zIndex: 30,
     width: '100%',
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    gap: 6,
-  },
-  topRow: {
+    maxWidth: 440,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    width: '100%',
-    maxWidth: 420,
-    gap: 8,
   },
-  closeCoverChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(25, 33, 52, 0.65)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 16,
+  roundButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: GLASS,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.24)',
-  },
-  closeCoverChipText: {
-    color: '#FFFFFF',
-    fontSize: 11.5,
-    fontWeight: '600',
-  },
-  spreadNavChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(25, 33, 52, 0.72)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  miniNavBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    borderColor: GLASS_BORDER,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  miniNavBtnDisabled: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  roundButtonActive: {
+    backgroundColor: '#FFFFFF',
   },
-  spreadNavText: {
-    color: '#FFFFFF',
-    fontSize: 11.5,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+  pressed: {
+    opacity: 0.75,
+    transform: [{ scale: 0.94 }],
   },
-  pageZonePills: {
+  segmented: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(25, 33, 52, 0.45)',
+    backgroundColor: GLASS,
     borderRadius: 20,
     padding: 3,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderColor: GLASS_BORDER,
   },
-  zonePill: {
+  segment: {
+    minWidth: 62,
     paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 16,
+    paddingVertical: 7,
+    borderRadius: 17,
+    alignItems: 'center',
   },
-  zonePillActive: {
+  segmentActive: {
     backgroundColor: '#FFFFFF',
   },
-  zonePillText: {
-    color: 'rgba(255, 255, 255, 0.88)',
-    fontSize: 11.5,
+  segmentText: {
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 13,
     fontWeight: '600',
   },
-  zonePillTextActive: {
+  segmentTextActive: {
     color: '#2B3654',
     fontWeight: '700',
   },
 
-  /* --- Botones Flotantes Laterales para Cambiar Páginas --- */
-  floatingPageTurnBtnLeft: {
-    position: 'absolute',
-    left: 8,
-    top: '48%',
-    zIndex: 40,
-    backgroundColor: 'rgba(20, 28, 45, 0.78)',
-    borderRadius: 22,
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.2,
-    borderColor: 'rgba(255, 255, 255, 0.32)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 8,
-  },
-  floatingPageTurnBtnRight: {
-    position: 'absolute',
-    right: 8,
-    top: '48%',
-    zIndex: 40,
-    backgroundColor: 'rgba(20, 28, 45, 0.78)',
-    borderRadius: 22,
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.2,
-    borderColor: 'rgba(255, 255, 255, 0.32)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 8,
-  },
-  floatingPageTurnText: {
-    color: '#FFFFFF',
-    fontSize: 9.5,
-    fontWeight: '700',
-    marginTop: 1,
-  },
-
-  /* --- Stage --- */
+  /* --- Escenario --- */
   gestureStage: {
     flex: 1,
     width: SCREEN_WIDTH,
@@ -595,28 +547,71 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'visible',
   },
-  floatingModeButton: {
+  preloadLayer: {
     position: 'absolute',
-    bottom: 12,
+    left: 0,
+    top: 0,
+  },
+
+  /* --- Navegación inferior --- */
+  bottomNav: {
+    position: 'absolute',
+    bottom: 6,
+    zIndex: 30,
+    width: '100%',
+    maxWidth: 440,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(24, 32, 50, 0.75)',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 6,
+    justifyContent: 'space-between',
   },
-  floatingModeButtonText: {
+  navButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: GLASS,
+    borderWidth: 1,
+    borderColor: GLASS_BORDER,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navButtonDisabled: {
+    opacity: 0.35,
+  },
+  pageIndicator: {
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 7,
+    borderRadius: 18,
+    backgroundColor: GLASS,
+    borderWidth: 1,
+    borderColor: GLASS_BORDER,
+  },
+  pageIndicatorTitle: {
     color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
     letterSpacing: 0.2,
+  },
+  pageIndicatorSub: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 11.5,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  dotsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 6,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.35)',
+  },
+  dotActive: {
+    width: 16,
+    backgroundColor: '#FFFFFF',
   },
 });
