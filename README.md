@@ -25,15 +25,11 @@
 ## ✨ Características Principales
 
 - 📖 **Portada 3D Realista**: Tapa dura vintage estilo cuero borgoña con sellado en pan de oro, relieves, textura de papel, lomo cosido y animación fluida de apertura/cierre de libro con perspectiva 3D (`react-native-reanimated`).
-- 🪄 **Hojeado volumétrico ("efecto grimorio")**: al abrir el libro y al cambiar de pliego varias hojas con grosor real despegan del lomo en cascada (retraso escalonado), se curvan en el aire como papel de alto gramaje y caen con un ligero rebote. El libro abierto reposa inclinado sobre la mesa, con bloques de hojas escalonados cuyo grosor crece según las páginas de cada lado.
-- 🖼️ **Collage & Marcos Fotográficos Retro**:
-  - **Página A (Izquierda)**:
-    - *Ventana de Navegador Web Retro*: Controles clásicos de ventana (`close`, `minimize`, `zoom`) y barra de título vintage.
-    - *Reproductor de Música Vintage*: Carátula de disco, barra de progreso y botones decorativos.
-    - *Ticket / Pase de Abordaje*: Formato horizontal con código de barras en vector SVG y detalles postales.
-  - **Página B (Derecha)**:
-    - *Tira de Negativos de 35mm*: 5 marcos de película vertical con perforaciones auténticas de carrete analógico.
-    - *Gran Polaroid Clásica*: Marco fotográfico ancho con textura realista de papel instantáneo.
+- 🪄 **Hojeado volumétrico ("efecto grimorio")**: al abrir el libro y al cambiar de pliego varias hojas con grosor real despegan del lomo en cascada (retraso escalonado) y caen con un ligero rebote. Cada hoja es una sola pieza con sombreado de curvatura continuo (sin juntas), y durante la apertura ya muestran las páginas reales del pliego para que el relevo al libro abierto sea un fundido suave. El libro abierto reposa inclinado sobre la mesa, con bloques de hojas escalonados cuyo grosor crece según las páginas de cada lado.
+- 🧩 **Libro a tu medida (componentes)**: ningún pliego trae contenido fijo. Desde **Diseñar** eliges qué poner en cada página, en el orden que quieras, a partir de un catálogo:
+  - *Título*, *Polaroid*, *Ventana retro*, *Reproductor*, *Ticket vintage*, *Tira de negativos*, *Nuestra canción*, *Nota* de máquina de escribir, *Etiquetas de amor* y *Stickers* (flores secas, rosas, querubín, corazones).
+  - Cada componente tiene un tamaño fijo (ancho completo o medio ancho): el editor muestra el espacio usado y sólo ofrece lo que cabe, así la página nunca se desborda.
+  - Textos editables, subir/bajar, mover a la otra página, quitar, y fotos por hueco.
 - 🎨 **Ilustraciones y Stickers Vectoriales SVG**:
   - Ramilletes botánicos y flores secas de azahar.
   - Querubín renacentista en trazo vintage.
@@ -45,17 +41,13 @@
   - **Zonas de Enfoque Rápido**: Botones flotantes para enfocar al instante la **Página A**, la **Página B**, la **Vista Doble Pliego** o el **Modo Panorámico 90°**.
   - **Doble Toque**: Alterna el nivel de ampliación entre vista general y detalle.
 - 💾 **Persistencia Local Segura**:
-  - Selección de fotos directamente de la galería con `expo-image-picker`.
-  - Las fotos elegidas se copian a un directorio aislado y seguro de la app (`FileSystem.documentDirectory/scrapbook_photos/`), garantizando que se conserven aunque se borren de la galería.
-  - Estado del álbum persistido de forma permanente con `AsyncStorage`.
-- 📚 **Álbum Multi-Pliego Extensible**:
-  - Botón para **añadir nuevos pliegos** dinámicamente (`+`), incrementando el total de páginas (ej. Pliego 1 = Páginas 1 y 2, etc.).
-  - Navegación bidireccional entre pliegos (`◀ Anterior` / `Siguiente ▶`).
-- 📤 **Captura en Alta Resolución y Compartir**:
-  - Generación de capturas fotográficas PNG en resolución completa mediante `react-native-view-shot`.
-  - Menú de compartir nativo integrado con `expo-sharing` (WhatsApp, Instagram, AirDrop, etc.).
-- 🔄 **Restauración de Recuerdos**:
-  - Opción en el menú de ajustes para restaurar todas las imágenes al collage romántico original curado de Unsplash.
+  - Las fotos de la galería se guardan reducidas (máx. 1600 px) en `FileSystem.documentDirectory/scrapbook_photos/`: cargan más rápido y se conservan aunque se borren de la galería.
+  - El libro se guarda automáticamente con `AsyncStorage`. Los álbumes del formato anterior se convierten a componentes sin perder sus fotos.
+- 📚 **Pliegos ilimitados**: botón **+ Pliego** para añadir pliegos en blanco, eliminar pliegos y navegar entre ellos con el paso de página.
+- 💌 **Compartir el libro con quien se lo dedicas**:
+  - *Enviar el libro completo*: genera un único archivo `.recuerdos.json` con las fotos incrustadas (reducidas a 1280 px) que se envía por WhatsApp, correo, AirDrop…
+  - Quien lo recibe lo abre en *Compartir › Abrir un libro que me enviaron* y lo ve en modo sólo lectura, con su propia portada y paso de página. Puede volver a su libro cuando quiera.
+  - *Compartir imagen de este pliego*: captura PNG en alta resolución (`react-native-view-shot`).
 
 ---
 
@@ -105,15 +97,18 @@ our-memories-scrapbook/
     │   │   └── LeafFace.tsx          # Cara proyectada de una hoja (anverso, reverso o canto)
     │   ├── BookCover3D.tsx           # Portada 3D del álbum con perspectiva, lomo y animación
     │   ├── InteractiveBookViewport.tsx # Viewport táctil (Pinch, Pan, botones de cámara y zoom)
-    │   ├── PageFlipOverlay.tsx       # Hojeado en cascada entre pliegos (efecto abanico)
-    │   ├── ScrapbookSpread.tsx       # Pliego doble con marcos fotográficos y stickers retro
+    │   ├── PageFlipOverlay.tsx       # Paso de página con una hoja continua (sin juntas)
+    │   ├── ScrapbookSpread.tsx       # Pliego doble: tapas, bloques de hojas y las dos páginas
+    │   ├── blocks/                   # Componentes que el usuario coloca en las páginas
+    │   └── editor/PageEditor.tsx     # Editor de pliego: catálogo, orden, textos y fotos
     │   └── StickersAndVectors.tsx    # Gráficos SVG (cintas washi, flores secas, querubín, lomo)
     ├── constants/
-    │   └── defaultData.ts            # Imágenes por defecto en Unsplash, etiquetas y dimensiones fijas
+    │   ├── blockCatalog.ts           # Catálogo de componentes, tamaños y cálculo de espacio
+    │   └── defaultData.ts            # Libro/pliego en blanco y dimensiones del pliego
     ├── services/
     │   └── storageService.ts         # Servicio de persistencia (AsyncStorage y FileSystem)
     └── types/
-        └── scrapbook.ts              # Definición de tipos TypeScript (PhotoSlotKey, Pliegos, etc.)
+        └── scrapbook.ts              # Tipos: libro, pliegos, páginas y componentes
 ```
 
 ---

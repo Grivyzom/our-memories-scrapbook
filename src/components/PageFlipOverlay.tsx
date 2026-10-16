@@ -15,7 +15,6 @@ import { SPREAD_HEIGHT, SPREAD_WIDTH } from '../constants/defaultData';
 import {
   LeafSpec,
   ProjectionOptions,
-  leafBendFromProgress,
   leafFlightCurve,
   makeLight,
   stackZIndex,
@@ -23,12 +22,16 @@ import {
 import { LeafFace, LeafFaceKind, leafFaceWidth } from './book3d/LeafFace';
 
 /* =========================================================================
- * Paso de página: una hoja con grosor real despega del lomo, se curva en el
- * aire y cae con un pequeño rebote al otro lado.
+ * Paso de página: una hoja con grosor real despega del lomo, gira en el aire
+ * y cae con un pequeño rebote al otro lado.
+ *
+ * La hoja es una sola pieza: antes se dividía en tiras con su propio ángulo y
+ * sombra, y en pleno giro se veían líneas entre ellas (una hoja "cuarteada").
+ * La curvatura del papel se sugiere con un degradado de luz continuo que se
+ * intensifica mientras la hoja está en el aire.
  *
  * El pliego de destino se captura antes de empezar, así que durante todo el
  * giro se ven sus imágenes: debajo de la hoja que se levanta y en su reverso.
- * Las capturas (react-native-view-shot) se recortan en tiras, una por segmento.
  * ========================================================================= */
 
 export type FlipDirection = 'next' | 'prev';
@@ -52,11 +55,10 @@ const SPINE_X = STAGE_WIDTH / 2;
 
 // Coreografía
 const LEAF_COUNT = 1;
-const SEGMENTS = 6;
+// Una sola cara por lado: sin juntas visibles
+const SEGMENTS = 1;
 const STAGGER_MS = 80;
 const FLIGHT_MS = 920;
-const MAX_BEND = 54;
-const BOUNCE_GAIN = 300;
 const READY_TIMEOUT_MS = 450;
 
 const LEAF_SPEC: LeafSpec = {
@@ -206,16 +208,13 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
     );
   }, [running]);
 
-  const sign = dir === 'next' ? 1 : -1;
-  // Cada hoja es algo más rígida que la anterior: el abanico no es uniforme
-  const maxBend = MAX_BEND * (1 - index * 0.08);
-
   const curve = useDerivedValue(() => leafFlightCurve(progress.value));
   const theta = useDerivedValue(() => {
     const c = Math.min(1, curve.value);
     return dir === 'next' ? 180 * c : 180 * (1 - c);
   });
-  const bend = useDerivedValue(() => sign * leafBendFromProgress(curve.value, maxBend, BOUNCE_GAIN));
+  // Hoja rígida: la curvatura la pone el degradado de luz (LeafCurlShade)
+  const bend = useSharedValue(0);
   const zIndex = useDerivedValue(() => {
     // En el lado de salida manda la primera hoja; en el de llegada, la última en caer
     const onStartSide = dir === 'next' ? theta.value < 90 : theta.value > 90;
@@ -261,16 +260,7 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
             onLoadEnd={onImageLoaded}
           />
         )}
-        {seg === 0 && (
-          // Sombra del pliegue junto al lomo
-          <LinearGradient
-            pointerEvents="none"
-            colors={['rgba(70,45,20,0.22)', 'rgba(70,45,20,0)']}
-            start={{ x: kind === 'front' ? 0 : 1, y: 0.5 }}
-            end={{ x: kind === 'front' ? 1 : 0, y: 0.5 }}
-            style={StyleSheet.absoluteFill}
-          />
-        )}
+        <LeafCurlShade theta={theta} fromSpineLeft={kind === 'front'} />
       </LeafFace>
     );
   };
@@ -281,6 +271,49 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
       {Array.from({ length: SEGMENTS }, (_, s) => renderSegment('front', s))}
       {Array.from({ length: SEGMENTS }, (_, s) => renderSegment('back', s))}
       <LeafFace {...faceProps} kind="edge" style={styles.leafEdge} />
+    </>
+  );
+};
+
+/* ======================= CURVATURA DEL PAPEL ======================= */
+
+/**
+ * Luz continua sobre toda la cara: sombra junto al lomo, brillo en el centro
+ * (donde el papel se abomba) y un leve oscurecido en el canto. Su intensidad
+ * crece con la altura de la hoja, así tumbada encaja con el pliego de debajo.
+ */
+const LeafCurlShade: React.FC<{ theta: SharedValue<number>; fromSpineLeft: boolean }> = ({
+  theta,
+  fromSpineLeft,
+}) => {
+  const style = useAnimatedStyle(() => ({
+    opacity: Math.round(Math.sin((theta.value * Math.PI) / 180) * 100) / 100,
+  }));
+  return (
+    <>
+      {/* Sombra del pliegue junto al lomo: siempre presente, como en el pliego */}
+      <LinearGradient
+        pointerEvents="none"
+        colors={['rgba(70,45,20,0.22)', 'rgba(70,45,20,0)']}
+        start={{ x: fromSpineLeft ? 0 : 1, y: 0.5 }}
+        end={{ x: fromSpineLeft ? 0.16 : 0.84, y: 0.5 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, style]}>
+        <LinearGradient
+          colors={[
+            'rgba(60,38,16,0.30)',
+            'rgba(60,38,16,0.06)',
+            'rgba(255,255,255,0.16)',
+            'rgba(255,255,255,0.04)',
+            'rgba(60,38,16,0.14)',
+          ]}
+          locations={[0, 0.18, 0.5, 0.78, 1]}
+          start={{ x: fromSpineLeft ? 0 : 1, y: 0.5 }}
+          end={{ x: fromSpineLeft ? 1 : 0, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
     </>
   );
 };

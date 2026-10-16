@@ -20,11 +20,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { captureRef as captureViewRef } from 'react-native-view-shot';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  CameraFocusZone,
-  PhotoSlotKey,
-  ScrapbookSpreadData,
-} from '../types/scrapbook';
+import { CameraFocusZone, PageSide, ScrapbookSpreadData } from '../types/scrapbook';
 import {
   SPREAD_WIDTH,
   SPREAD_HEIGHT,
@@ -45,13 +41,28 @@ export interface SpreadNavRequest {
 interface InteractiveBookViewportProps {
   spreads: ScrapbookSpreadData[];
   activeSpreadIndex: number;
-  onSelectPhotoSlot: (slot: PhotoSlotKey) => void;
+  /** Toca un hueco de foto (sin callback el libro es de sólo lectura). */
+  onPressPhoto?: (side: PageSide, blockId: string, photoIndex: number) => void;
+  /** Toca una página en blanco (abre el editor). */
+  onPressEmptyPage?: (side: PageSide) => void;
   onCloseBook: () => void;
   captureRef: React.RefObject<View>;
   /** Se llama cuando la hoja ya tapa el pliego viejo: cambia el pliego activo. */
   onGoToSpread: (index: number) => void;
   navRequest?: SpreadNavRequest | null;
+  /**
+   * false mientras la portada se abre o se cierra encima: no se precargan
+   * pliegos (no compite con la animación) y no se aceptan gestos.
+   */
+  interactive: boolean;
+  /** Se va a cerrar el libro: la cámara vuelve al encuadre de la portada. */
+  closing: boolean;
+  /** La cámara ya está en el encuadre de la portada: se puede cerrar la tapa. */
+  onReadyToClose: () => void;
 }
+
+// Lo que tarda la cámara en volver a "Ambas" antes de que baje la tapa
+const CLOSE_CAMERA_MS = 380;
 
 const SPRING_CONFIG = {
   damping: 20,
@@ -111,6 +122,8 @@ const captureSpread = async (
   }
 };
 
+const noop = () => {};
+
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 interface CachedCapture {
@@ -128,11 +141,15 @@ const ZONES: { zone: CameraFocusZone; label: string }[] = [
 export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = ({
   spreads,
   activeSpreadIndex,
-  onSelectPhotoSlot,
+  onPressPhoto,
+  onPressEmptyPage,
   onCloseBook,
   captureRef,
   onGoToSpread,
   navRequest,
+  interactive,
+  closing,
+  onReadyToClose,
 }) => {
   // Arranca en "Ambas Páginas": es el encuadre en el que termina la apertura de la portada
   const [focusZone, setFocusZone] = useState<CameraFocusZone>('full');
@@ -234,7 +251,9 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   // Todo lo que cambia el dibujo de un pliego (fotos, nº de hojas a cada lado)
   const keyFor = (index: number) => {
     const sp = spreadsRef.current[index];
-    return sp ? `${sp.id}|${spreadsRef.current.length}|${JSON.stringify(sp.photos)}` : '';
+    return sp
+      ? `${sp.id}|${spreadsRef.current.length}|${JSON.stringify(sp.left)}|${JSON.stringify(sp.right)}`
+      : '';
   };
   const cachedCapture = (index: number, resolution: number) => {
     const hit = captureCache.current.get(index);
@@ -352,7 +371,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
   // En reposo se preparan las capturas del pliego actual y de sus vecinos
   useEffect(() => {
-    if (flip) return;
+    if (flip || !interactive) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       const index = activeIndexRef.current;
@@ -372,7 +391,17 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [activeSpreadIndex, spreads, flip, focusZone]);
+  }, [activeSpreadIndex, spreads, flip, focusZone, interactive]);
+
+  /* ==================== CIERRE ==================== */
+  // Antes de cerrar, la cámara vuelve al encuadre en el que la portada toma el relevo
+  useEffect(() => {
+    if (!closing) return;
+    queuedTarget.current = null;
+    applyCameraZone('full');
+    const timer = setTimeout(onReadyToClose, CLOSE_CAMERA_MS);
+    return () => clearTimeout(timer);
+  }, [closing]);
 
   const swipeTurn = useCallback(
     (delta: number) => turnTo(activeIndexRef.current + delta),
@@ -487,7 +516,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const dotCount = Math.min(MAX_DOTS, totalSpreads);
 
   return (
-    <View style={styles.viewportWrapper}>
+    <View style={styles.viewportWrapper} pointerEvents={interactive ? 'auto' : 'none'}>
       {/* ==================== BARRA SUPERIOR ==================== */}
       <View style={styles.topBar}>
         <Pressable
@@ -548,8 +577,9 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
                 style={styles.preloadLayer}
               >
                 <ScrapbookSpread
-                  photos={preloadSpread.photos}
-                  onSelectPhotoSlot={() => {}}
+                  spread={preloadSpread}
+                  onPressPhoto={onPressPhoto ? noop : undefined}
+                  onPressEmptyPage={onPressEmptyPage ? noop : undefined}
                   spreadIndex={preloadIndex}
                   leftStackLayers={stackLayersFor(preloadIndex)}
                   rightStackLayers={stackLayersFor(totalSpreads - 1 - preloadIndex)}
@@ -567,8 +597,9 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
               shouldRasterizeIOS={!isZoomedIn}
             >
               <ScrapbookSpread
-                photos={currentSpread.photos}
-                onSelectPhotoSlot={onSelectPhotoSlot}
+                spread={currentSpread}
+                onPressPhoto={onPressPhoto}
+                onPressEmptyPage={onPressEmptyPage}
                 spreadIndex={activeSpreadIndex}
                 leftStackLayers={stackLayersFor(activeSpreadIndex)}
                 rightStackLayers={stackLayersFor(totalSpreads - 1 - activeSpreadIndex)}

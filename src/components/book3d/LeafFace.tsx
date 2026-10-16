@@ -32,9 +32,11 @@ interface LeafFaceProps {
   children?: React.ReactNode;
 }
 
-/** Ancho en pantalla de una cara de hoja (segmento con solape o canto). */
+/** Ancho en pantalla de una cara de hoja (segmento con solape, hoja entera o canto). */
 export const leafFaceWidth = (spec: LeafSpec, kind: LeafFaceKind) =>
-  kind === 'edge' ? Math.max(1.5, spec.thickness) : spec.length / spec.segments + SEAM_OVERLAP;
+  kind === 'edge'
+    ? Math.max(1.5, spec.thickness)
+    : spec.length / spec.segments + (spec.segments > 1 ? SEAM_OVERLAP : 0);
 
 /**
  * Una cara proyectada de una hoja con volumen: un segmento de su anverso o
