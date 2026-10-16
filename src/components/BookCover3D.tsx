@@ -32,7 +32,6 @@ import {
   FaceGeometry,
   LeafSpec,
   ProjectionOptions,
-  leafBendFromProgress,
   leafFlightCurve,
   makeLight,
   normalizeAngle,
@@ -46,6 +45,9 @@ import {
   SPREAD_HEIGHT,
   getFullSpreadScale,
 } from '../constants/defaultData';
+import { PAGE_WIDTH } from '../constants/blockCatalog';
+import { PageSide, ScrapbookSpreadData } from '../types/scrapbook';
+import { BookPageView } from './blocks/BookPageView';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -75,14 +77,13 @@ const COVER_OPEN_DEG = 172;
 
 /* ---- Hojas que despegan en abanico al abrir ("efecto grimorio") ----
  * openProgress avanza de forma lineal; cada hoja vuela en su propia ventana
- * de tiempo, escalonada respecto a la anterior. */
+ * de tiempo, escalonada respecto a la anterior. Cada hoja es una sola pieza
+ * (sin tiras), así no se ven juntas al girar. */
 const OPEN_LEAVES = 5;
-const OPEN_LEAF_SEGMENTS = 4;
+const OPEN_LEAF_SEGMENTS = 1;
 const OPEN_LEAF_START = 0.16; // la primera hoja despega cuando la tapa ya está en el aire
 const OPEN_LEAF_STAGGER = 0.07;
 const OPEN_LEAF_FLIGHT = 0.42;
-const OPEN_LEAF_MAX_BEND = 46;
-const OPEN_LEAF_BOUNCE = 260;
 // La tapa termina de girar aquí (fracción de openProgress)
 const COVER_SWING_END = 0.55;
 
@@ -199,11 +200,23 @@ const CLOSED_ORDER = stackOrder(0, 0);
 interface BookCover3DProps {
   openProgress: SharedValue<number>;
   onOpenBook: () => void;
+  /**
+   * Pliego que aparece al abrir: sus páginas se dibujan en la primera hoja y
+   * en el reverso de la última hoja del abanico, así al terminar de abrir ya
+   * se ve el contenido real y el relevo con el visor no cambia nada.
+   */
+  revealSpread?: ScrapbookSpreadData;
+  revealIndex?: number;
+  /** Mismo aspecto que el libro editable (huecos "Elegir foto", página en blanco). */
+  editable?: boolean;
 }
 
 export const BookCover3D: React.FC<BookCover3DProps> = ({
   openProgress,
   onOpenBook,
+  revealSpread,
+  revealIndex = 0,
+  editable = false,
 }) => {
   // Orientación libre del libro controlada por el usuario
   const yaw = useSharedValue(DEFAULT_YAW - 30);
@@ -369,7 +382,16 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
               {...FACE}
             >
               <PaperTexture seed={31} />
-              <Text style={styles.firstPageTitle}>Nuestra Historia ❤️</Text>
+              {revealSpread && (
+                <RevealedPage
+                  spread={revealSpread}
+                  side="right"
+                  spreadIndex={revealIndex}
+                  editable={editable}
+                  faceWidth={W - 4}
+                  faceHeight={H - 4}
+                />
+              )}
             </ProjectedFace>
 
             {/* ---------- Hojas que despegan en abanico al abrir ---------- */}
@@ -381,6 +403,22 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
                 order={order}
                 yaw={viewYaw}
                 pitch={viewPitch}
+                // La última en caer queda encima del bloque izquierdo: lleva la página izquierda
+                backContent={
+                  i === OPEN_LEAVES - 1 && revealSpread ? (
+                    <>
+                      <PaperTexture seed={31} />
+                      <RevealedPage
+                        spread={revealSpread}
+                        side="left"
+                        spreadIndex={revealIndex}
+                        editable={editable}
+                        faceWidth={W - 4}
+                        faceHeight={H - 4}
+                      />
+                    </>
+                  ) : null
+                }
               />
             ))}
 
@@ -429,6 +467,7 @@ interface OpeningLeafProps {
   order: SharedValue<number[]>;
   yaw: SharedValue<number>;
   pitch: SharedValue<number>;
+  backContent?: React.ReactNode;
 }
 
 const OpeningLeaf = React.memo(function OpeningLeaf({
@@ -437,6 +476,7 @@ const OpeningLeaf = React.memo(function OpeningLeaf({
   order,
   yaw,
   pitch,
+  backContent,
 }: OpeningLeafProps) {
   // Hojas apiladas bajo la tapa: cada una un poco más hundida en el bloque
   const spec = useMemo<LeafSpec>(
@@ -448,13 +488,10 @@ const OpeningLeaf = React.memo(function OpeningLeaf({
     }),
     [index]
   );
-  const maxBend = OPEN_LEAF_MAX_BEND * (1 - index * 0.06);
-
   const curve = useDerivedValue(() => leafCurve(index, openProgress.value));
   const theta = useDerivedValue(() => Math.min(1, curve.value) * leafLandAngle(index));
-  const bend = useDerivedValue(() =>
-    leafBendFromProgress(curve.value, maxBend, OPEN_LEAF_BOUNCE)
-  );
+  // Hoja de una pieza: la curvatura la sugiere el sombreado, no la geometría
+  const bend = useSharedValue(0);
   const zIndex = useDerivedValue(() => order.value[index + 1]);
   // Ocultas mientras el libro está cerrado (quedan bajo la tapa): no cuestan nada
   const presence = useDerivedValue<number>(() => (openProgress.value > 0.02 ? 1 : 0));
@@ -479,12 +516,48 @@ const OpeningLeaf = React.memo(function OpeningLeaf({
         <LeafFace key={`f${s}`} {...faceProps} kind="front" seg={s} style={styles.leafFront} />
       ))}
       {Array.from({ length: OPEN_LEAF_SEGMENTS }, (_, s) => (
-        <LeafFace key={`b${s}`} {...faceProps} kind="back" seg={s} style={styles.leafBack} />
+        <LeafFace key={`b${s}`} {...faceProps} kind="back" seg={s} style={styles.leafBack}>
+          {backContent}
+        </LeafFace>
       ))}
       <LeafFace {...faceProps} kind="edge" style={styles.leafEdge} />
     </>
   );
 });
+
+/* ===================== PÁGINAS REALES DURANTE LA APERTURA ===================== */
+
+const noop = () => {};
+
+/** Una página del pliego, escalada al tamaño de la cara de la portada. */
+const RevealedPage: React.FC<{
+  spread: ScrapbookSpreadData;
+  side: PageSide;
+  spreadIndex: number;
+  editable: boolean;
+  faceWidth: number;
+  faceHeight: number;
+}> = React.memo(({ spread, side, spreadIndex, editable, faceWidth, faceHeight }) => (
+  <View
+    pointerEvents="none"
+    style={{
+      position: 'absolute',
+      width: PAGE_WIDTH,
+      height: SPREAD_HEIGHT,
+      left: (faceWidth - PAGE_WIDTH) / 2,
+      top: (faceHeight - SPREAD_HEIGHT) / 2,
+      transform: [{ scaleX: faceWidth / PAGE_WIDTH }, { scaleY: faceHeight / SPREAD_HEIGHT }],
+    }}
+  >
+    <BookPageView
+      page={spread[side]}
+      side={side}
+      pageNumber={spreadIndex * 2 + (side === 'left' ? 1 : 2)}
+      onPressPhoto={editable ? noop : undefined}
+      onPressEmpty={editable ? noop : undefined}
+    />
+  </View>
+));
 
 /* ============================== ARTE DE CADA CARA ============================== */
 
@@ -656,13 +729,6 @@ const styles = StyleSheet.create({
   firstPageContent: {
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  firstPageTitle: {
-    color: '#8C6E4A',
-    fontSize: 18,
-    fontStyle: 'italic',
-    fontWeight: '700',
-    opacity: 0.75,
   },
   coverBody: {
     flex: 1,

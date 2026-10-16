@@ -1,60 +1,183 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
-import { INITIAL_SPREADS } from '../constants/defaultData';
-import { PhotoSlotKey, ScrapbookSpreadData } from '../types/scrapbook';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { Image } from 'react-native';
+import { BLOCK_CATALOG, createBlock } from '../constants/blockCatalog';
+import { createEmptyBook } from '../constants/defaultData';
+import {
+  Book,
+  BookPage,
+  PageBlock,
+  ScrapbookSpreadData,
+  StickerKind,
+} from '../types/scrapbook';
 
-const STORAGE_KEY = '@our_memories_scrapbook_v1';
+const STORAGE_KEY = '@our_memories_book_v2';
+const RECEIVED_KEY = '@our_memories_received_book_v2';
+const LEGACY_STORAGE_KEY = '@our_memories_scrapbook_v1';
 const PHOTOS_DIR = `${FileSystem.documentDirectory}scrapbook_photos/`;
+const RECEIVED_DIR = `${FileSystem.documentDirectory}received_book/`;
 
-async function ensureDirectoryExists(): Promise<void> {
-  const dirInfo = await FileSystem.getInfoAsync(PHOTOS_DIR);
+// Las fotos se guardan reducidas: cargan antes, ocupan menos y se comparten rápido
+const STORED_PHOTO_MAX_SIDE = 1600;
+const SHARED_PHOTO_MAX_SIDE = 1280;
+const PACKAGE_KIND = 'our-memories-book';
+
+async function ensureDirectoryExists(dir: string): Promise<void> {
+  const dirInfo = await FileSystem.getInfoAsync(dir);
   if (!dirInfo.exists) {
-    await FileSystem.makeDirectoryAsync(PHOTOS_DIR, { intermediates: true });
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
   }
 }
 
-export async function loadScrapbookState(): Promise<{
-  spreads: ScrapbookSpreadData[];
-  totalPages: number;
-}> {
+/* ============================ VALIDACIÓN ============================ */
+
+const STICKERS: StickerKind[] = ['flowers', 'roses', 'cherub', 'hearts'];
+const asString = (v: unknown, max = 400) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+/** Sólo se aceptan fotos que se puedan mostrar en cualquier teléfono. */
+const sanitizePhotoUri = (uri: unknown, allowLocal: boolean) => {
+  if (typeof uri !== 'string') return '';
+  if (uri.startsWith('data:image/') || /^https?:\/\//.test(uri)) return uri;
+  if (allowLocal && uri.startsWith('file:')) return uri;
+  return '';
+};
+
+const sanitizeBlock = (raw: any, allowLocal: boolean): PageBlock | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const def = BLOCK_CATALOG[raw.type as keyof typeof BLOCK_CATALOG];
+  if (!def) return null;
+  const photos = Array.from({ length: def.photoCount }, (_, i) =>
+    sanitizePhotoUri(Array.isArray(raw.photos) ? raw.photos[i] : '', allowLocal)
+  );
+  const block: PageBlock = {
+    id: asString(raw.id, 64) || createBlock(def.type).id,
+    type: def.type,
+    photos,
+    text: asString(raw.text),
+    subtitle: asString(raw.subtitle),
+  };
+  if (def.type === 'sticker') {
+    block.sticker = STICKERS.includes(raw.sticker) ? raw.sticker : 'flowers';
+  }
+  return block;
+};
+
+const sanitizePage = (raw: any, allowLocal: boolean): BookPage => ({
+  blocks: Array.isArray(raw?.blocks)
+    ? raw.blocks
+        .map((b: unknown) => sanitizeBlock(b, allowLocal))
+        .filter((b: PageBlock | null): b is PageBlock => b !== null)
+    : [],
+});
+
+const sanitizeBook = (raw: any, allowLocal: boolean): Book | null => {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.spreads) || raw.spreads.length === 0) {
+    return null;
+  }
+  const spreads: ScrapbookSpreadData[] = raw.spreads.slice(0, 200).map((sp: any, i: number) => ({
+    id: asString(sp?.id, 64) || `spread-${i + 1}`,
+    title: asString(sp?.title, 80) || `Pliego ${i + 1}`,
+    left: sanitizePage(sp?.left, allowLocal),
+    right: sanitizePage(sp?.right, allowLocal),
+  }));
+  return {
+    version: 2,
+    id: asString(raw.id, 64) || `book-${Date.now().toString(36)}`,
+    title: asString(raw.title, 80) || 'Nuestros Recuerdos',
+    dedicatedTo: asString(raw.dedicatedTo, 80) || undefined,
+    spreads,
+  };
+};
+
+/* ===================== MIGRACIÓN DEL FORMATO ANTERIOR ===================== */
+
+/**
+ * La versión 1 tenía el mismo collage fijo en todos los pliegos y sólo
+ * guardaba sus fotos. Se convierte en componentes con la misma composición,
+ * así nadie pierde las fotos que ya había elegido.
+ */
+const migrateLegacySpread = (sp: any, i: number): ScrapbookSpreadData => {
+  const p = (sp?.photos ?? {}) as Record<string, string>;
+  const withPhotos = (block: PageBlock, photos: (string | undefined)[]) => ({
+    ...block,
+    photos: block.photos.map((_, k) => sanitizePhotoUri(photos[k], true)),
+  });
+  const rightTitle = createBlock('title');
+  rightTitle.text = 'Momentos inolvidables ✨';
+  rightTitle.subtitle = `PLIEGO ${i + 1}`;
+  return {
+    id: asString(sp?.id, 64) || `spread-${i + 1}`,
+    title: asString(sp?.title, 80) || `Pliego ${i + 1}`,
+    left: {
+      blocks: [
+        withPhotos(createBlock('browser'), [p.browserMain]),
+        withPhotos(createBlock('music'), [p.musicPlayer]),
+        createBlock('note'),
+        withPhotos(createBlock('ticket'), [p.ticketHorizontal]),
+      ],
+    },
+    right: {
+      blocks: [
+        rightTitle,
+        createBlock('song'),
+        withPhotos(createBlock('polaroid'), [p.polaroidBottom]),
+        createBlock('loveLabels'),
+        withPhotos(createBlock('film'), [p.film1, p.film2, p.film3, p.film4]),
+      ],
+    },
+  };
+};
+
+/* ============================ LIBRO PROPIO ============================ */
+
+export async function loadBook(): Promise<Book> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return { spreads: INITIAL_SPREADS, totalPages: INITIAL_SPREADS.length * 2 };
+    if (raw) {
+      const book = sanitizeBook(JSON.parse(raw), true);
+      if (book) return book;
     }
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed.spreads) && parsed.spreads.length > 0) {
-      return {
-        spreads: parsed.spreads,
-        totalPages: Math.max(parsed.totalPages ?? 0, parsed.spreads.length * 2),
-      };
+    const legacy = await AsyncStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacy) {
+      const parsed = JSON.parse(legacy);
+      if (Array.isArray(parsed.spreads) && parsed.spreads.length > 0) {
+        const book: Book = {
+          ...createEmptyBook(),
+          spreads: parsed.spreads.map(migrateLegacySpread),
+        };
+        await saveBook(book);
+        await AsyncStorage.removeItem(LEGACY_STORAGE_KEY);
+        return book;
+      }
     }
-    return { spreads: INITIAL_SPREADS, totalPages: INITIAL_SPREADS.length * 2 };
   } catch (error) {
-    console.warn('Error cargando estado del scrapbook:', error);
-    return { spreads: INITIAL_SPREADS, totalPages: INITIAL_SPREADS.length * 2 };
+    console.warn('Error cargando el libro:', error);
   }
+  return createEmptyBook();
 }
 
-export async function saveScrapbookState(
-  spreads: ScrapbookSpreadData[],
-  totalPages: number
-): Promise<void> {
+export async function saveBook(book: Book): Promise<void> {
   try {
-    await AsyncStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ spreads, totalPages, updatedAt: Date.now() })
-    );
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ ...book, updatedAt: Date.now() }));
   } catch (error) {
-    console.warn('Error guardando estado del scrapbook:', error);
+    console.warn('Error guardando el libro:', error);
   }
 }
 
-export async function pickAndPersistPhoto(
-  spreadId: string,
-  slotKey: PhotoSlotKey
-): Promise<string | null> {
+const getImageSize = (uri: string) =>
+  new Promise<{ width: number; height: number }>((resolve, reject) =>
+    Image.getSize(uri, (width, height) => resolve({ width, height }), reject)
+  );
+
+const resizeActions = (width: number, height: number, maxSide: number) => {
+  if (Math.max(width, height) <= maxSide) return [];
+  return [{ resize: width >= height ? { width: maxSide } : { height: maxSide } }];
+};
+
+/** Elige una foto de la galería y guarda una copia reducida dentro de la app. */
+export async function pickAndPersistPhoto(blockId: string): Promise<string | null> {
   const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!permission.granted) {
     throw new Error('PERMISSION_DENIED');
@@ -63,36 +186,159 @@ export async function pickAndPersistPhoto(
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
     allowsEditing: true,
-    quality: 0.9,
+    quality: 1,
   });
 
   if (result.canceled || !result.assets || result.assets.length === 0) {
     return null;
   }
 
-  const sourceUri = result.assets[0].uri;
-  await ensureDirectoryExists();
+  const asset = result.assets[0];
+  const resized = await ImageManipulator.manipulateAsync(
+    asset.uri,
+    resizeActions(asset.width, asset.height, STORED_PHOTO_MAX_SIDE),
+    { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG }
+  );
 
-  const fileExtension = sourceUri.split('.').pop()?.split('?')[0] || 'jpg';
-  const fileName = `${spreadId}_${slotKey}_${Date.now()}.${fileExtension}`;
-  const destinationUri = `${PHOTOS_DIR}${fileName}`;
-
-  await FileSystem.copyAsync({
-    from: sourceUri,
-    to: destinationUri,
-  });
-
+  await ensureDirectoryExists(PHOTOS_DIR);
+  const destinationUri = `${PHOTOS_DIR}${blockId}_${Date.now()}.jpg`;
+  await FileSystem.moveAsync({ from: resized.uri, to: destinationUri });
   return destinationUri;
 }
 
-export async function clearAllSavedPhotos(): Promise<void> {
+/** Borra el libro propio y sus fotos: se empieza con un libro en blanco. */
+export async function resetBook(): Promise<Book> {
   try {
     const dirInfo = await FileSystem.getInfoAsync(PHOTOS_DIR);
     if (dirInfo.exists) {
       await FileSystem.deleteAsync(PHOTOS_DIR, { idempotent: true });
     }
-    await AsyncStorage.removeItem(STORAGE_KEY);
+    await AsyncStorage.multiRemove([STORAGE_KEY, LEGACY_STORAGE_KEY]);
   } catch (error) {
-    console.warn('Error limpiando fotos locales:', error);
+    console.warn('Error limpiando el libro:', error);
+  }
+  const book = createEmptyBook();
+  await saveBook(book);
+  return book;
+}
+
+/* ============================ COMPARTIR ============================ */
+
+/** Foto local -> data URI reducida (las remotas y las ya incrustadas se dejan igual). */
+const embedPhoto = async (uri: string, cache: Map<string, string>) => {
+  if (!uri || !uri.startsWith('file:')) return uri;
+  const hit = cache.get(uri);
+  if (hit) return hit;
+  try {
+    const { width, height } = await getImageSize(uri);
+    const out = await ImageManipulator.manipulateAsync(
+      uri,
+      resizeActions(width, height, SHARED_PHOTO_MAX_SIDE),
+      { compress: 0.72, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+    );
+    FileSystem.deleteAsync(out.uri, { idempotent: true }).catch(() => {});
+    const dataUri = `data:image/jpeg;base64,${out.base64}`;
+    cache.set(uri, dataUri);
+    return dataUri;
+  } catch {
+    return '';
+  }
+};
+
+/**
+ * Empaqueta el libro en un único archivo autocontenido (las fotos van
+ * incrustadas) que se puede enviar por WhatsApp, correo, AirDrop...
+ * Quien lo recibe lo abre con "Abrir libro recibido".
+ */
+export async function exportBookPackage(book: Book): Promise<string> {
+  const cache = new Map<string, string>();
+  const spreads: ScrapbookSpreadData[] = [];
+  for (const sp of book.spreads) {
+    const embedPage = async (page: BookPage): Promise<BookPage> => {
+      const blocks: PageBlock[] = [];
+      for (const block of page.blocks) {
+        const photos: string[] = [];
+        for (const uri of block.photos) photos.push(await embedPhoto(uri, cache));
+        blocks.push({ ...block, photos });
+      }
+      return { blocks };
+    };
+    spreads.push({ ...sp, left: await embedPage(sp.left), right: await embedPage(sp.right) });
+  }
+
+  const payload = {
+    kind: PACKAGE_KIND,
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    book: { ...book, spreads },
+  };
+  const safeName = (book.dedicatedTo ? `Para-${book.dedicatedTo}` : 'Nuestros-Recuerdos')
+    .normalize('NFD')
+    .replace(/[^\w-]+/g, '-')
+    .slice(0, 40);
+  const fileUri = `${FileSystem.cacheDirectory}${safeName}.recuerdos.json`;
+  await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(payload));
+  return fileUri;
+}
+
+/** Fotos incrustadas -> archivos locales: Image no tiene que decodificar base64 enormes. */
+const extractPhotos = async (book: Book): Promise<Book> => {
+  await FileSystem.deleteAsync(RECEIVED_DIR, { idempotent: true });
+  await ensureDirectoryExists(RECEIVED_DIR);
+  let n = 0;
+  const written = new Map<string, string>();
+  const extract = async (uri: string) => {
+    const match = /^data:image\/[a-z+]+;base64,(.+)$/i.exec(uri);
+    if (!match) return uri;
+    const hit = written.get(uri);
+    if (hit) return hit;
+    n += 1;
+    const fileUri = `${RECEIVED_DIR}${n}.jpg`;
+    await FileSystem.writeAsStringAsync(fileUri, match[1], {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    written.set(uri, fileUri);
+    return fileUri;
+  };
+  const spreads: ScrapbookSpreadData[] = [];
+  for (const sp of book.spreads) {
+    const page = async (p: BookPage): Promise<BookPage> => {
+      const blocks: PageBlock[] = [];
+      for (const block of p.blocks) {
+        const photos: string[] = [];
+        for (const uri of block.photos) photos.push(await extract(uri));
+        blocks.push({ ...block, photos });
+      }
+      return { blocks };
+    };
+    spreads.push({ ...sp, left: await page(sp.left), right: await page(sp.right) });
+  }
+  return { ...book, spreads };
+};
+
+/** Lee un archivo de libro recibido, lo valida y lo guarda para verlo. */
+export async function importBookPackage(fileUri: string): Promise<Book> {
+  const raw = await FileSystem.readAsStringAsync(fileUri);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('INVALID_PACKAGE');
+  }
+  if (parsed?.kind !== PACKAGE_KIND) throw new Error('INVALID_PACKAGE');
+  // Un libro recibido nunca puede apuntar a archivos del teléfono de quien lo abre
+  const book = sanitizeBook(parsed.book, false);
+  if (!book) throw new Error('INVALID_PACKAGE');
+  const local = await extractPhotos(book);
+  await AsyncStorage.setItem(RECEIVED_KEY, JSON.stringify(local));
+  return local;
+}
+
+export async function loadReceivedBook(): Promise<Book | null> {
+  try {
+    const raw = await AsyncStorage.getItem(RECEIVED_KEY);
+    return raw ? sanitizeBook(JSON.parse(raw), true) : null;
+  } catch {
+    return null;
   }
 }
