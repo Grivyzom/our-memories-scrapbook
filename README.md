@@ -25,6 +25,7 @@
 ## ✨ Características Principales
 
 - 📖 **Portada 3D Realista**: Tapa dura vintage estilo cuero borgoña con sellado en pan de oro, relieves, textura de papel, lomo cosido y animación fluida de apertura/cierre de libro con perspectiva 3D (`react-native-reanimated`).
+- 🪄 **Hojeado volumétrico ("efecto grimorio")**: al abrir el libro y al cambiar de pliego varias hojas con grosor real despegan del lomo en cascada (retraso escalonado), se curvan en el aire como papel de alto gramaje y caen con un ligero rebote. El libro abierto reposa inclinado sobre la mesa, con bloques de hojas escalonados cuyo grosor crece según las páginas de cada lado.
 - 🖼️ **Collage & Marcos Fotográficos Retro**:
   - **Página A (Izquierda)**:
     - *Ventana de Navegador Web Retro*: Controles clásicos de ventana (`close`, `minimize`, `zoom`) y barra de título vintage.
@@ -99,8 +100,12 @@ our-memories-scrapbook/
 ├── .gitignore                        # Reglas de exclusión para Git (node_modules, binarios, caches)
 └── src/
     ├── components/
+    │   ├── book3d/
+    │   │   ├── engine.ts             # Motor 3D: proyección, hojas segmentadas con grosor y curvatura
+    │   │   └── LeafFace.tsx          # Cara proyectada de una hoja (anverso, reverso o canto)
     │   ├── BookCover3D.tsx           # Portada 3D del álbum con perspectiva, lomo y animación
     │   ├── InteractiveBookViewport.tsx # Viewport táctil (Pinch, Pan, botones de cámara y zoom)
+    │   ├── PageFlipOverlay.tsx       # Hojeado en cascada entre pliegos (efecto abanico)
     │   ├── ScrapbookSpread.tsx       # Pliego doble con marcos fotográficos y stickers retro
     │   └── StickersAndVectors.tsx    # Gráficos SVG (cintas washi, flores secas, querubín, lomo)
     ├── constants/

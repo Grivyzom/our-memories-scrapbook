@@ -25,12 +25,68 @@ interface ScrapbookSpreadProps {
   photos: SpreadPhotosMap;
   onSelectPhotoSlot: (slot: PhotoSlotKey) => void;
   spreadIndex?: number;
+  /** Número de capas visibles en el bloque de hojas izquierdo / derecho. */
+  leftStackLayers?: number;
+  rightStackLayers?: number;
 }
+
+// Escalonado de cada hoja del bloque: hacia fuera y hacia abajo (el libro está inclinado)
+const BLOCK_STEP_X = 1.5;
+const BLOCK_STEP_Y = 1.7;
+const MAX_BLOCK_LAYERS = 8;
+
+/**
+ * Bloque de hojas bajo una de las páginas: capas escalonadas con sombra
+ * propia, para que el pliego se lea como un bloque denso de papel grueso y
+ * no como un plano sin cuerpo.
+ */
+const PageBlock: React.FC<{ side: 'left' | 'right'; layers: number }> = ({ side, layers }) => {
+  const count = Math.max(1, Math.min(MAX_BLOCK_LAYERS, Math.round(layers)));
+  const pageLeft = 14;
+  const pageTop = 12;
+  const half = SPREAD_WIDTH / 2;
+
+  const rect = (k: number) => ({
+    left: side === 'left' ? pageLeft - k * BLOCK_STEP_X : pageLeft + half,
+    top: pageTop + k * 0.4,
+    width: half + k * BLOCK_STEP_X,
+    height: SPREAD_HEIGHT + k * (BLOCK_STEP_Y - 0.4),
+  });
+
+  return (
+    <>
+      {/* Sombra de contacto del bloque sobre la tapa */}
+      <View
+        style={[
+          styles.blockShadow,
+          rect(count + 1.6),
+          side === 'left' ? styles.blockLeftRadius : styles.blockRightRadius,
+        ]}
+      />
+      {Array.from({ length: count }, (_, i) => {
+        const k = count - i; // de la capa más baja a la más alta
+        return (
+          <View
+            key={k}
+            style={[
+              styles.blockSheet,
+              rect(k),
+              side === 'left' ? styles.blockLeftRadius : styles.blockRightRadius,
+              { backgroundColor: k % 2 === 0 ? '#EFE7D6' : '#F7F1E4' },
+            ]}
+          />
+        );
+      })}
+    </>
+  );
+};
 
 export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
   photos,
   onSelectPhotoSlot,
   spreadIndex = 0,
+  leftStackLayers = 4,
+  rightStackLayers = 4,
 }) => {
   const [isPlayingRetroMusic, setIsPlayingRetroMusic] = useState(false);
 
@@ -44,11 +100,9 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
         <LeatherTexture seed={27} intensity={1.15} />
       </View>
 
-      {/* Hojas apiladas debajo en los bordes para dar volumen real de libro */}
-      <View style={[styles.stackedSheet, styles.sheetLayer5]} />
-      <View style={[styles.stackedSheet, styles.sheetLayer4]} />
-      <View style={[styles.stackedSheet, styles.sheetLayer3]} />
-      <View style={[styles.stackedSheet, styles.sheetLayer2]} />
+      {/* Bloques de hojas escalonados: su grosor crece con las páginas de cada lado */}
+      <PageBlock side="left" layers={leftStackLayers} />
+      <PageBlock side="right" layers={rightStackLayers} />
 
       {/* Pliego doble principal */}
       <View style={styles.mainSpreadPaper}>
@@ -404,31 +458,22 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     zIndex: 1,
   },
-  stackedSheet: {
+  blockSheet: {
     position: 'absolute',
-    backgroundColor: '#F3EDE0',
-    borderRadius: 11,
-    borderWidth: 1,
-    borderColor: '#D5CBB8',
+    borderWidth: 0.8,
+    borderColor: '#CDBFA4',
   },
-  sheetLayer5: {
-    width: SPREAD_WIDTH + 14,
-    height: SPREAD_HEIGHT + 10,
+  blockShadow: {
+    position: 'absolute',
+    backgroundColor: 'rgba(40, 8, 10, 0.28)',
   },
-  sheetLayer4: {
-    width: SPREAD_WIDTH + 10,
-    height: SPREAD_HEIGHT + 7,
-    backgroundColor: '#F6F1E5',
+  blockLeftRadius: {
+    borderTopLeftRadius: 10,
+    borderBottomLeftRadius: 10,
   },
-  sheetLayer3: {
-    width: SPREAD_WIDTH + 6,
-    height: SPREAD_HEIGHT + 4,
-    backgroundColor: '#F9F5EB',
-  },
-  sheetLayer2: {
-    width: SPREAD_WIDTH + 3,
-    height: SPREAD_HEIGHT + 2,
-    backgroundColor: '#FCF9F2',
+  blockRightRadius: {
+    borderTopRightRadius: 10,
+    borderBottomRightRadius: 10,
   },
   mainSpreadPaper: {
     width: SPREAD_WIDTH,

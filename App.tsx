@@ -16,6 +16,7 @@ import {
   useSharedValue,
   withTiming,
   Easing,
+  runOnJS,
 } from 'react-native-reanimated';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { captureRef as captureViewRef } from 'react-native-view-shot';
@@ -51,21 +52,23 @@ export default function App() {
 
   const currentSpread = spreads[activeSpreadIndex] || spreads[0];
 
+  // Progreso lineal: la portada y cada hoja del abanico aplican su propia curva
+  // (despegue, vuelo y rebote) dentro de su ventana de tiempo escalonada
   const handleOpenBook = () => {
-    openProgress.value = withTiming(1, {
-      duration: 620,
-      easing: Easing.out(Easing.cubic),
-    });
-    setTimeout(() => {
-      setIsBookOpen(true);
-    }, 460);
+    openProgress.value = withTiming(
+      1,
+      { duration: 1550, easing: Easing.linear },
+      (finished) => {
+        if (finished) runOnJS(setIsBookOpen)(true);
+      }
+    );
   };
 
   const handleCloseBook = () => {
     setIsBookOpen(false);
     openProgress.value = withTiming(0, {
-      duration: 520,
-      easing: Easing.out(Easing.cubic),
+      duration: 1100,
+      easing: Easing.inOut(Easing.quad),
     });
   };
 
