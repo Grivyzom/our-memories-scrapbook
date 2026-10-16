@@ -9,7 +9,6 @@ import {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
-  FadeIn,
   useSharedValue,
   useAnimatedStyle,
   withRepeat,
@@ -23,7 +22,12 @@ import {
   PhotoSlotKey,
   SpreadPhotosMap,
 } from '../types/scrapbook';
-import { SPREAD_WIDTH, SPREAD_HEIGHT } from '../constants/defaultData';
+import {
+  SPREAD_WIDTH,
+  SPREAD_HEIGHT,
+  OPEN_BOOK_TILT,
+  getFullSpreadScale,
+} from '../constants/defaultData';
 import { ScrapbookSpread } from './ScrapbookSpread';
 import { FlipDirection, FlipRequest, PageFlipOverlay } from './PageFlipOverlay';
 
@@ -51,8 +55,8 @@ const SPRING_CONFIG = {
 const TILT_BY_ZONE: Record<CameraFocusZone, number> = {
   left: 9,
   right: 9,
-  center: 16,
-  full: 16,
+  center: OPEN_BOOK_TILT,
+  full: OPEN_BOOK_TILT,
   landscape90: 0,
 };
 const CAMERA_PERSPECTIVE = 1500;
@@ -79,36 +83,33 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   onPrevSpread,
   onNextSpread,
 }) => {
-  const [focusZone, setFocusZone] = useState<CameraFocusZone>('left');
+  // Arranca en "Ambas Páginas": es el encuadre en el que termina la apertura de la portada
+  const [focusZone, setFocusZone] = useState<CameraFocusZone>('full');
 
   // Escalas calculadas para adaptarse a cualquier smartphone
   const singlePageScale = Math.min(
     (SCREEN_WIDTH * 0.94) / (SPREAD_WIDTH * 0.52),
     (SCREEN_HEIGHT * 0.58) / SPREAD_HEIGHT
   );
-  const fullSpreadScale = (SCREEN_WIDTH * 0.95) / (SPREAD_WIDTH + 28);
+  const fullSpreadScale = getFullSpreadScale(SCREEN_WIDTH);
   const rotatedLandscapeScale = Math.min(
     (SCREEN_HEIGHT * 0.66) / (SPREAD_WIDTH + 28),
     (SCREEN_WIDTH * 0.92) / (SPREAD_HEIGHT + 24)
   );
 
-  const scale = useSharedValue(singlePageScale);
-  const savedScale = useSharedValue(singlePageScale);
-  const translateX = useSharedValue((SPREAD_WIDTH * 0.23) * singlePageScale);
-  const savedTranslateX = useSharedValue((SPREAD_WIDTH * 0.23) * singlePageScale);
+  const scale = useSharedValue(fullSpreadScale);
+  const savedScale = useSharedValue(fullSpreadScale);
+  const translateX = useSharedValue(0);
+  const savedTranslateX = useSharedValue(0);
   const translateY = useSharedValue(0);
   const savedTranslateY = useSharedValue(0);
   const rotationDeg = useSharedValue(0);
-  const tiltDeg = useSharedValue(TILT_BY_ZONE.left);
+  const tiltDeg = useSharedValue(TILT_BY_ZONE.full);
   // Balanceo muy sutil en reposo: el libro "respira" sobre la mesa
   const idleSway = useSharedValue(0);
 
   useEffect(() => {
-    idleSway.value = withRepeat(
-      withTiming(1, { duration: 3600, easing: Easing.inOut(Easing.sin) }),
-      -1,
-      true
-    );
+    idleSway.value = withRepeat(withTiming(1, { duration: 7200, easing: Easing.linear }), -1, false);
   }, []);
 
   const applyCameraZone = (zone: CameraFocusZone) => {
@@ -151,10 +152,6 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
     }
   };
 
-  useEffect(() => {
-    applyCameraZone('left');
-  }, []);
-
   // Gesto Pan con amortiguación
   const panGesture = Gesture.Pan()
     .onUpdate((e) => {
@@ -189,7 +186,8 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const animatedViewportStyle = useAnimatedStyle(() => {
     // El balanceo se apaga en vista apaisada (libro sin inclinación)
     const swayAmount = Math.min(1, tiltDeg.value / 9);
-    const sway = (idleSway.value - 0.5) * swayAmount;
+    // Empieza en 0 para que el relevo desde la portada no dé un salto
+    const sway = Math.sin(idleSway.value * 2 * Math.PI) * 0.5 * swayAmount;
     return {
       transform: [
         { perspective: CAMERA_PERSPECTIVE },
@@ -395,7 +393,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
       {/* ==================== ÁREA INTERACTIVA CON GESTOS ==================== */}
       <GestureDetector gesture={composedGesture}>
-        <Animated.View style={styles.gestureStage} entering={FadeIn.duration(280)}>
+        <Animated.View style={styles.gestureStage}>
           <Animated.View style={animatedViewportStyle}>
             <View ref={captureRef} collapsable={false}>
               <ScrapbookSpread

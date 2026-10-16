@@ -12,8 +12,10 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import {
+import Animated, {
   useSharedValue,
+  useAnimatedStyle,
+  cancelAnimation,
   withTiming,
   Easing,
   runOnJS,
@@ -40,6 +42,10 @@ export default function App() {
   const [totalPages, setTotalPages] = useState(INITIAL_SPREADS.length * 2);
 
   const openProgress = useSharedValue(0);
+  // La portada abierta queda encima del visor y se funde con él: un único libro
+  const [isCoverMounted, setIsCoverMounted] = useState(true);
+  const coverOpacity = useSharedValue(1);
+  const coverOverlayStyle = useAnimatedStyle(() => ({ opacity: coverOpacity.value }));
   const scrapbookCaptureRef = useRef<View>(null);
 
   useEffect(() => {
@@ -54,17 +60,28 @@ export default function App() {
 
   // Progreso lineal: la portada y cada hoja del abanico aplican su propia curva
   // (despegue, vuelo y rebote) dentro de su ventana de tiempo escalonada
+  const handleBookOpened = () => {
+    // El visor se monta debajo en el mismo encuadre y la portada se desvanece encima
+    setIsBookOpen(true);
+    coverOpacity.value = withTiming(0, { duration: 380 }, (finished) => {
+      if (finished) runOnJS(setIsCoverMounted)(false);
+    });
+  };
+
   const handleOpenBook = () => {
     openProgress.value = withTiming(
       1,
       { duration: 1550, easing: Easing.linear },
       (finished) => {
-        if (finished) runOnJS(setIsBookOpen)(true);
+        if (finished) runOnJS(handleBookOpened)();
       }
     );
   };
 
   const handleCloseBook = () => {
+    cancelAnimation(coverOpacity);
+    coverOpacity.value = 1;
+    setIsCoverMounted(true);
     setIsBookOpen(false);
     openProgress.value = withTiming(0, {
       duration: 1100,
@@ -272,12 +289,7 @@ export default function App() {
 
           {/* ==================== ÁREA CENTRAL: PORTADA 3D O INTERIOR ==================== */}
           <View style={styles.stageArea}>
-            {!isBookOpen ? (
-              <BookCover3D
-                openProgress={openProgress}
-                onOpenBook={handleOpenBook}
-              />
-            ) : (
+            {isBookOpen && (
               <InteractiveBookViewport
                 photos={currentSpread.photos}
                 onSelectPhotoSlot={handleSelectPhotoSlot}
@@ -289,6 +301,17 @@ export default function App() {
                 onNextSpread={handleNextSpread}
                 onGoToSpread={handleGoToSpread}
               />
+            )}
+            {isCoverMounted && (
+              <Animated.View
+                style={[styles.coverOverlay, coverOverlayStyle]}
+                pointerEvents={isBookOpen ? 'none' : 'auto'}
+              >
+                <BookCover3D
+                  openProgress={openProgress}
+                  onOpenBook={handleOpenBook}
+                />
+              </Animated.View>
             )}
           </View>
 
@@ -387,6 +410,11 @@ const styles = StyleSheet.create({
   },
   stageArea: {
     flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  coverOverlay: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
   },
