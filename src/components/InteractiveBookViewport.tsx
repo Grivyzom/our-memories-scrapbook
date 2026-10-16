@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,10 +8,15 @@ import {
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  Easing,
+  FadeIn,
   useSharedValue,
   useAnimatedStyle,
+  withRepeat,
   withSpring,
+  withTiming,
 } from 'react-native-reanimated';
+import { captureRef as captureViewRef } from 'react-native-view-shot';
 import { Ionicons } from '@expo/vector-icons';
 import {
   CameraFocusZone,
@@ -20,6 +25,7 @@ import {
 } from '../types/scrapbook';
 import { SPREAD_WIDTH, SPREAD_HEIGHT } from '../constants/defaultData';
 import { ScrapbookSpread } from './ScrapbookSpread';
+import { FlipDirection, FlipRequest, PageFlipOverlay } from './PageFlipOverlay';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -39,6 +45,28 @@ const SPRING_CONFIG = {
   damping: 20,
   stiffness: 150,
   mass: 0.8,
+};
+
+// Inclinación del libro abierto sobre la "mesa" (grados) según el encuadre
+const TILT_BY_ZONE: Record<CameraFocusZone, number> = {
+  left: 9,
+  right: 9,
+  center: 16,
+  full: 16,
+  landscape90: 0,
+};
+const CAMERA_PERSPECTIVE = 1500;
+
+// Grosor visible de cada bloque de hojas según cuántos pliegos quedan a cada lado
+const stackLayersFor = (sheets: number) => Math.min(8, 2 + sheets);
+
+const captureSpread = async (ref: React.RefObject<View>): Promise<string | null> => {
+  try {
+    if (!ref.current) return null;
+    return await captureViewRef(ref, { format: 'jpg', quality: 0.92, result: 'tmpfile' });
+  } catch {
+    return null;
+  }
 };
 
 export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = ({
@@ -71,9 +99,21 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const translateY = useSharedValue(0);
   const savedTranslateY = useSharedValue(0);
   const rotationDeg = useSharedValue(0);
+  const tiltDeg = useSharedValue(TILT_BY_ZONE.left);
+  // Balanceo muy sutil en reposo: el libro "respira" sobre la mesa
+  const idleSway = useSharedValue(0);
+
+  useEffect(() => {
+    idleSway.value = withRepeat(
+      withTiming(1, { duration: 3600, easing: Easing.inOut(Easing.sin) }),
+      -1,
+      true
+    );
+  }, []);
 
   const applyCameraZone = (zone: CameraFocusZone) => {
     setFocusZone(zone);
+    tiltDeg.value = withSpring(TILT_BY_ZONE[zone], SPRING_CONFIG);
     if (zone === 'left') {
       const targetX = SPREAD_WIDTH * 0.23 * singlePageScale;
       scale.value = withSpring(singlePageScale, SPRING_CONFIG);
@@ -146,14 +186,67 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
   const composedGesture = Gesture.Simultaneous(panGesture, pinchGesture);
 
-  const animatedViewportStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: translateX.value },
-      { translateY: translateY.value },
-      { rotateZ: `${rotationDeg.value}deg` },
-      { scale: scale.value },
-    ],
-  }));
+  const animatedViewportStyle = useAnimatedStyle(() => {
+    // El balanceo se apaga en vista apaisada (libro sin inclinación)
+    const swayAmount = Math.min(1, tiltDeg.value / 9);
+    const sway = (idleSway.value - 0.5) * swayAmount;
+    return {
+      transform: [
+        { perspective: CAMERA_PERSPECTIVE },
+        { translateX: translateX.value },
+        { translateY: translateY.value },
+        { rotateX: `${tiltDeg.value + sway * 1.2}deg` },
+        { rotateY: `${sway * 1.6}deg` },
+        { rotateZ: `${rotationDeg.value}deg` },
+        { scale: scale.value },
+      ],
+    };
+  });
+
+  /* ==================== HOJEADO EN CASCADA ==================== */
+  const [flip, setFlip] = useState<FlipRequest | null>(null);
+  const [flipNewUri, setFlipNewUri] = useState<string | null>(null);
+  const flipBusy = useRef(false);
+  const flipCounter = useRef(0);
+
+  const canGoPrev = activeSpreadIndex > 0;
+  const canGoNext = activeSpreadIndex < totalSpreads - 1;
+
+  const turnPage = useCallback(
+    async (dir: FlipDirection) => {
+      if (flipBusy.current) return;
+      if (dir === 'next' ? !canGoNext : !canGoPrev) return;
+      flipBusy.current = true;
+      const oldUri = await captureSpread(captureRef);
+      flipCounter.current += 1;
+      setFlipNewUri(null);
+      setFlip({ id: flipCounter.current, dir, oldUri });
+    },
+    [canGoNext, canGoPrev, captureRef]
+  );
+
+  // La animación ya tapa el pliego viejo: cambiamos el contenido real debajo y
+  // capturamos el nuevo para que la última hoja aterrice mostrándolo
+  const handleFlipReady = useCallback(() => {
+    if (!flip) return;
+    if (flip.dir === 'next') onNextSpread();
+    else onPrevSpread();
+    const flipId = flip.id;
+    setTimeout(async () => {
+      const uri = await captureSpread(captureRef);
+      if (flipCounter.current === flipId) setFlipNewUri(uri);
+    }, 120);
+  }, [flip, onNextSpread, onPrevSpread, captureRef]);
+
+  const handleFlipFinished = useCallback(() => {
+    flipBusy.current = false;
+    setFlip(null);
+    setFlipNewUri(null);
+  }, []);
+
+  const isFlipping = flip !== null;
+  const prevDisabled = !canGoPrev || isFlipping;
+  const nextDisabled = !canGoNext || isFlipping;
 
   const handleCycleViewMode = () => {
     if (focusZone === 'full' || focusZone === 'center') {
@@ -181,18 +274,18 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
           <View style={styles.spreadNavChip}>
             <Pressable
-              onPress={onPrevSpread}
-              disabled={activeSpreadIndex === 0}
+              onPress={() => turnPage('prev')}
+              disabled={prevDisabled}
               style={[
                 styles.miniNavBtn,
-                activeSpreadIndex === 0 && styles.miniNavBtnDisabled,
+                prevDisabled && styles.miniNavBtnDisabled,
               ]}
               hitSlop={8}
             >
               <Ionicons
                 name="chevron-back"
                 size={14}
-                color={activeSpreadIndex === 0 ? 'rgba(255,255,255,0.3)' : '#FFF'}
+                color={prevDisabled ? 'rgba(255,255,255,0.3)' : '#FFF'}
               />
             </Pressable>
 
@@ -201,18 +294,18 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
             </Text>
 
             <Pressable
-              onPress={onNextSpread}
-              disabled={activeSpreadIndex >= totalSpreads - 1}
+              onPress={() => turnPage('next')}
+              disabled={nextDisabled}
               style={[
                 styles.miniNavBtn,
-                activeSpreadIndex >= totalSpreads - 1 && styles.miniNavBtnDisabled,
+                nextDisabled && styles.miniNavBtnDisabled,
               ]}
               hitSlop={8}
             >
               <Ionicons
                 name="chevron-forward"
                 size={14}
-                color={activeSpreadIndex >= totalSpreads - 1 ? 'rgba(255,255,255,0.3)' : '#FFF'}
+                color={nextDisabled ? 'rgba(255,255,255,0.3)' : '#FFF'}
               />
             </Pressable>
           </View>
@@ -275,9 +368,10 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
       {/* ==================== BOTONES LATERALES DE CAMBIO DE PÁGINA ==================== */}
       {/* Botón flotante para ir a la página/pliego anterior */}
-      {activeSpreadIndex > 0 && (
+      {canGoPrev && (
         <Pressable
-          onPress={onPrevSpread}
+          onPress={() => turnPage('prev')}
+          disabled={isFlipping}
           style={styles.floatingPageTurnBtnLeft}
           hitSlop={10}
         >
@@ -287,9 +381,10 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       )}
 
       {/* Botón flotante para ir a la página/pliego siguiente */}
-      {activeSpreadIndex < totalSpreads - 1 && (
+      {canGoNext && (
         <Pressable
-          onPress={onNextSpread}
+          onPress={() => turnPage('next')}
+          disabled={isFlipping}
           style={styles.floatingPageTurnBtnRight}
           hitSlop={10}
         >
@@ -300,15 +395,26 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
       {/* ==================== ÁREA INTERACTIVA CON GESTOS ==================== */}
       <GestureDetector gesture={composedGesture}>
-        <Animated.View style={styles.gestureStage}>
+        <Animated.View style={styles.gestureStage} entering={FadeIn.duration(280)}>
           <Animated.View style={animatedViewportStyle}>
             <View ref={captureRef} collapsable={false}>
               <ScrapbookSpread
                 photos={photos}
                 onSelectPhotoSlot={onSelectPhotoSlot}
                 spreadIndex={activeSpreadIndex}
+                leftStackLayers={stackLayersFor(activeSpreadIndex)}
+                rightStackLayers={stackLayersFor(totalSpreads - 1 - activeSpreadIndex)}
               />
             </View>
+            {flip && (
+              <PageFlipOverlay
+                key={flip.id}
+                request={flip}
+                newUri={flipNewUri}
+                onReady={handleFlipReady}
+                onFinished={handleFlipFinished}
+              />
+            )}
           </Animated.View>
         </Animated.View>
       </GestureDetector>
