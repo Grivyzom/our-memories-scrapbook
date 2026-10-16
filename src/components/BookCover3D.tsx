@@ -40,6 +40,11 @@ import {
   stackZIndex,
 } from './book3d/engine';
 import { LeafFace } from './book3d/LeafFace';
+import {
+  OPEN_BOOK_TILT,
+  SPREAD_HEIGHT,
+  getFullSpreadScale,
+} from '../constants/defaultData';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -79,6 +84,14 @@ const OPEN_LEAF_MAX_BEND = 46;
 const OPEN_LEAF_BOUNCE = 260;
 // La tapa termina de girar aquí (fracción de openProgress)
 const COVER_SWING_END = 0.55;
+
+/* ---- Relevo con el libro abierto ----
+ * Mientras se abre, el libro se desliza (el lomo pasa al centro) y se escala
+ * hasta coincidir con el pliego del visor en "Ambas Páginas", con la misma
+ * inclinación. Así el visor aparece justo debajo y sólo hay un libro. */
+const OPEN_STAGE_SCALE = (SPREAD_HEIGHT * getFullSpreadScale(SCREEN_WIDTH)) / COVER_HEIGHT;
+const ALIGN_START = 0.05;
+const ALIGN_END = 0.6;
 
 // Posiciones distribuidas del patrón de corazones estilo acuarela en la portada
 const HEART_PATTERN = [
@@ -171,7 +184,7 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
     const swing = Math.min(1, openProgress.value / COVER_SWING_END);
     return {
       yaw: normalizeAngle(yaw.value) * settle,
-      pitch: pitch.value * settle,
+      pitch: pitch.value * settle + OPEN_BOOK_TILT * (1 - settle),
       hinge: leafFlightCurve(swing) * COVER_OPEN_DEG,
     };
   };
@@ -255,9 +268,18 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
     return coverGeometry(hinge, false);
   }, coverZ);
 
-  // Desvanecimiento final al terminar de abrir
-  const stageStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(openProgress.value, [0, 0.88, 1], [1, 1, 0], Extrapolation.CLAMP),
+  // Encaje con el pliego abierto: desplaza el lomo al centro y ajusta la escala
+  const stageStyle = useAnimatedStyle(() => {
+    const t = interpolate(openProgress.value, [ALIGN_START, ALIGN_END], [0, 1], Extrapolation.CLAMP);
+    const align = t * t * (3 - 2 * t);
+    const s = 1 + (OPEN_STAGE_SCALE - 1) * align;
+    return {
+      transform: [{ translateX: (COVER_WIDTH / 2) * OPEN_STAGE_SCALE * align }, { scale: s }],
+    };
+  });
+
+  const hintStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(openProgress.value, [0, 0.12], [1, 0], Extrapolation.CLAMP),
   }));
 
   // Sombra proyectada en el "suelo": se ensancha según el ancho visible del libro
@@ -358,9 +380,9 @@ export const BookCover3D: React.FC<BookCover3DProps> = ({
         </Animated.View>
       </GestureDetector>
 
-      <Text style={styles.tapHintText}>
+      <Animated.Text style={[styles.tapHintText, hintStyle]}>
         Arrastra para girar • Toca para abrir el cuaderno ✨
-      </Text>
+      </Animated.Text>
     </View>
   );
 };
@@ -546,7 +568,10 @@ const EndpaperArt: React.FC = () => (
 );
 
 const styles = StyleSheet.create({
+  // Mismo tamaño que el área táctil: el centro del libro coincide con el del escenario
   centerContainer: {
+    width: SCREEN_WIDTH,
+    height: COVER_HEIGHT + 70,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -743,7 +768,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#F6E3E1',
   },
   tapHintText: {
-    marginTop: 4,
+    position: 'absolute',
+    bottom: 4,
     color: 'rgba(255, 255, 255, 0.85)',
     fontSize: 13,
     fontWeight: '500',
