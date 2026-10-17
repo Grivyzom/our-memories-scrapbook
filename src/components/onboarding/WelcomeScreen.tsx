@@ -27,6 +27,11 @@ interface WelcomeScreenProps {
   /** Termina la dedicatoria: nombre de la persona ('' si se omite). */
   onDedicate: (name: string) => void;
   onContinueOwnBook: () => void;
+  /**
+   * Descarta el libro empezado y deja uno en blanco. Resuelve false si el
+   * usuario cancela la confirmación; si no, se pasa a la dedicatoria.
+   */
+  onStartNewBook: () => Promise<boolean>;
   onOpenGift: () => void;
   onViewReceived: () => void;
   /** Hay un libro abierto detrás: se puede volver sin cambiar nada. */
@@ -44,6 +49,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   receivedFrom,
   onDedicate,
   onContinueOwnBook,
+  onStartNewBook,
   onOpenGift,
   onViewReceived,
   onDismiss,
@@ -174,6 +180,19 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
             accent
             onPress={hasOwnBook ? onContinueOwnBook : () => setStep('dedicate')}
           />
+          {hasOwnBook && (
+            <ChoiceCard
+              icon="sparkles-outline"
+              title="Empezar un libro nuevo"
+              text="Páginas en blanco para diseñarlo desde cero."
+              onPress={async () => {
+                if (await onStartNewBook()) {
+                  setName('');
+                  setStep('dedicate');
+                }
+              }}
+            />
+          )}
           {receivedFrom !== undefined && receivedFrom !== null && (
             <ChoiceCard
               icon="heart-outline"
