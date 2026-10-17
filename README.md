@@ -100,7 +100,7 @@ our-memories-scrapbook/
     │   │   └── LeafFace.tsx          # Cara proyectada de una hoja (anverso, reverso o canto)
     │   ├── BookCover3D.tsx           # Portada 3D del álbum con perspectiva, lomo y animación
     │   ├── InteractiveBookViewport.tsx # Viewport táctil (Pinch, Pan, botones de cámara y zoom)
-    │   ├── PageFlipOverlay.tsx       # Paso de página con una hoja continua (sin juntas)
+    │   ├── PageFlipOverlay.tsx       # Paso de página: la hoja dibuja las páginas reales (sin capturas)
     │   ├── ScrapbookSpread.tsx       # Pliego doble: tapas, bloques de hojas y las dos páginas
     │   ├── blocks/                   # Componentes que el usuario coloca en las páginas
     │   └── editor/PageEditor.tsx     # Editor de pliego: catálogo, orden, textos y fotos

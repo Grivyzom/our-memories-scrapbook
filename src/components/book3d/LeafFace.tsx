@@ -30,6 +30,8 @@ interface LeafFaceProps {
   stageWidth: number;
   stageHeight: number;
   faceHeight: number;
+  /** Cachea el contenido de la cara como textura en la GPU (ver ProjectedFace). */
+  rasterize?: boolean;
   style?: StyleProp<ViewStyle>;
   children?: React.ReactNode;
 }
@@ -59,6 +61,7 @@ export const LeafFace: React.FC<LeafFaceProps> = ({
   stageWidth,
   stageHeight,
   faceHeight,
+  rasterize,
   style,
   children,
 }) => {
@@ -86,6 +89,7 @@ export const LeafFace: React.FC<LeafFaceProps> = ({
     <ProjectedFace
       project={project}
       shadeColor="#1A0F08"
+      rasterize={rasterize}
       style={[
         {
           width,
