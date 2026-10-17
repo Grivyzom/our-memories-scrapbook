@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -28,20 +28,25 @@ import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 
 import { createEmptyBook, createEmptySpread } from './src/constants/defaultData';
+import { findIncompletePage, summarizeBook } from './src/constants/blockCatalog';
 import { Book, PageSide, ScrapbookSpreadData } from './src/types/scrapbook';
 import {
+  GiftStatus,
   ReceivedFile,
+  bookFingerprint,
   exportBookPackage,
   getGiftCode,
   importBookPackage,
   loadAppState,
   loadBook,
+  loadGiftStatus,
   loadReceivedBook,
-  pickAndPersistPhoto,
+  pickAndPersistPhotos,
   readReceivedFile,
   resetBook,
   saveAppState,
   saveBook,
+  saveGiftStatus,
 } from './src/services/storageService';
 import { BookCover3D } from './src/components/BookCover3D';
 import {
@@ -49,7 +54,7 @@ import {
   SpreadNavRequest,
 } from './src/components/InteractiveBookViewport';
 import { PageEditor } from './src/components/editor/PageEditor';
-import { ActionSheet, ActionSheetItem } from './src/components/ui/ActionSheet';
+import { ActionSheet, ActionSheetItem, ActionSheetSection } from './src/components/ui/ActionSheet';
 import { Toast, ToastMessage } from './src/components/ui/Toast';
 import { WelcomeScreen, WelcomeStep } from './src/components/onboarding/WelcomeScreen';
 import { GiftCodeSheet, GiftWrapSheet } from './src/components/gift/GiftSheets';
@@ -80,12 +85,16 @@ const CLOSE_MS = 1100;
 const SAVE_DEBOUNCE_MS = 400;
 // Tras la dedicatoria el libro se abre solo, una vez se ve la portada con el nombre
 const AUTO_OPEN_DELAY_MS = 900;
+// Lo que tarda en cerrarse una hoja (Modal) antes de abrir otra encima
+const SHEET_CLOSE_MS = 340;
 
 const GRADIENT = ['#3D4B6E', '#56688F', '#7383AD'] as const;
 
+/** Alguna página tiene componentes. */
+const hasBlocks = (b: Book) => b.spreads.some((sp) => sp.left.blocks.length + sp.right.blocks.length > 0);
+
 /** El libro ya tiene algo: se ofrece seguir con él en vez de empezar uno. */
-const hasContent = (b: Book) =>
-  !!b.dedicatedTo || b.spreads.length > 1 || b.spreads.some((sp) => sp.left.blocks.length + sp.right.blocks.length > 0);
+const hasContent = (b: Book) => !!b.dedicatedTo || b.spreads.length > 1 || hasBlocks(b);
 
 export default function App() {
   const [book, setBook] = useState<Book>(createEmptyBook);
@@ -118,6 +127,8 @@ export default function App() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isGiftWrapOpen, setIsGiftWrapOpen] = useState(false);
   const [giftCode, setGiftCode] = useState<string | null>(null);
+  // Qué se hizo ya con el regalo (enviar el archivo, dar el código)
+  const [giftStatus, setGiftStatus] = useState<GiftStatus>({});
   // Regalo cifrado elegido que espera su código
   const [lockedGift, setLockedGift] = useState<ReceivedFile | null>(null);
   const [editor, setEditor] = useState<{ visible: boolean; side: PageSide }>({
@@ -144,13 +155,15 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [saved, received, appState] = await Promise.all([
+      const [saved, received, appState, sent] = await Promise.all([
         loadBook(),
         loadReceivedBook(),
         loadAppState(),
+        loadGiftStatus(),
       ]);
       setBook(saved);
       setReceivedBook(received);
+      setGiftStatus(sent);
       onboarded.current = appState.onboarded;
       if (appState.lastView === 'received' && received) setViewMode('received');
       setScreen(appState.onboarded ? 'book' : 'welcome');
@@ -179,6 +192,16 @@ export default function App() {
 
   const safeIndex = Math.min(activeSpreadIndex, spreads.length - 1);
   const currentSpread = spreads[safeIndex];
+
+  // Estado del regalo: qué falta y si cambió después de enviarlo
+  const bookSummary = useMemo(() => summarizeBook(book), [book]);
+  const fingerprint = useMemo(() => bookFingerprint(book), [book]);
+  const changedSinceSent = !!giftStatus.sentFingerprint && giftStatus.sentFingerprint !== fingerprint;
+
+  const updateGiftStatus = (patch: Partial<GiftStatus>) => setGiftStatus((prev) => ({ ...prev, ...patch }));
+  useEffect(() => {
+    if (loaded.current) saveGiftStatus(giftStatus);
+  }, [giftStatus]);
 
   const updateSpread = (index: number, spread: ScrapbookSpreadData) =>
     setBook((prev) => ({
@@ -294,31 +317,44 @@ export default function App() {
     }
   };
 
-  // Elegir y guardar una foto para un hueco concreto de un componente
-  const handlePickPhoto = async (side: PageSide, blockId: string, photoIndex: number) => {
+  /*
+   * Elegir y guardar fotos para un componente: la primera va al hueco tocado y,
+   * si se piden varias, las demás llenan los huecos vacíos siguientes. El
+   * componente se busca por su id: el editor puede haber cambiado de pliego
+   * mientras se elegían.
+   */
+  const handlePickPhoto = async (side: PageSide, blockId: string, photoIndex: number, count = 1) => {
     if (isReadOnly) return;
-    const spreadIndex = safeIndex;
     try {
-      const localUri = await pickAndPersistPhoto(blockId);
-      if (!localUri) return;
+      const uris = await pickAndPersistPhotos(blockId, count);
+      if (uris.length === 0) return;
+      const fill = (photos: string[]) => {
+        const next = [...photos];
+        let slot = photoIndex;
+        for (const [n, uri] of uris.entries()) {
+          if (n > 0) {
+            slot += 1;
+            while (slot < next.length && next[slot]) slot += 1;
+          }
+          if (slot >= next.length) break;
+          next[slot] = uri;
+        }
+        return next;
+      };
       setBook((prev) => ({
         ...prev,
-        spreads: prev.spreads.map((sp, i) =>
-          i !== spreadIndex
+        spreads: prev.spreads.map((sp) =>
+          !sp[side].blocks.some((b) => b.id === blockId)
             ? sp
             : {
                 ...sp,
                 [side]: {
-                  blocks: sp[side].blocks.map((b) =>
-                    b.id === blockId
-                      ? { ...b, photos: b.photos.map((p, k) => (k === photoIndex ? localUri : p)) }
-                      : b
-                  ),
+                  blocks: sp[side].blocks.map((b) => (b.id === blockId ? { ...b, photos: fill(b.photos) } : b)),
                 },
               }
         ),
       }));
-      showToast('Foto actualizada', 'image');
+      showToast(uris.length > 1 ? `${uris.length} fotos colocadas` : 'Foto actualizada', 'image');
     } catch {
       Alert.alert('Error', 'No se pudo guardar la foto.');
     }
@@ -340,6 +376,13 @@ export default function App() {
     }
     const pages = updated.spreads.length * 2;
     showToast(`Pliego ${newIndex + 1} añadido · págs. ${pages - 1}–${pages}`, 'add-circle-outline');
+  };
+
+  // Desde el editor: el pliego nuevo aparece al instante (el libro queda debajo, tapado)
+  const handleAddSpreadFromEditor = () => {
+    const newIndex = book.spreads.length;
+    setBook((prev) => ({ ...prev, spreads: [...prev.spreads, createEmptySpread(prev.spreads.length + 1)] }));
+    setActiveSpreadIndex(newIndex);
   };
 
   const handleDeleteSpread = () => {
@@ -374,6 +417,7 @@ export default function App() {
             setBook(fresh);
             // El libro nuevo es otro regalo: tendrá otro código
             setGiftCode(null);
+            setGiftStatus({});
             setActiveSpreadIndex(0);
             showToast('Libro nuevo listo para llenar', 'sparkles-outline');
           },
@@ -440,11 +484,32 @@ export default function App() {
         UTI: 'public.json',
         dialogTitle: 'Enviar el regalo',
       });
+      // Se guarda la huella de lo enviado: si luego cambia, se avisa de reenviarlo
+      updateGiftStatus({ sentAt: Date.now(), sentFingerprint: fingerprint });
     } catch {
       Alert.alert('Error al enviar', 'No fue posible preparar el regalo para enviarlo.');
     } finally {
       isExporting.current = false;
     }
+  };
+
+  const handleCodeShared = () => updateGiftStatus({ codeSharedAt: Date.now() });
+
+  // "Completar" desde el regalo: se abre el editor en la primera página sin terminar
+  const designFromGift = () => {
+    setIsGiftWrapOpen(false);
+    const target = findIncompletePage(book);
+    setTimeout(() => {
+      if (target && phaseRef.current !== 'opening' && phaseRef.current !== 'closing') {
+        setActiveSpreadIndex(target.spreadIndex);
+      }
+      openEditor(target?.side ?? 'left');
+    }, SHEET_CLOSE_MS);
+  };
+
+  const sharePictureFromGift = () => {
+    setIsGiftWrapOpen(false);
+    setTimeout(handleSharePicture, SHEET_CLOSE_MS);
   };
 
   const finishImport = async (file: ReceivedFile, code?: string) => {
@@ -519,10 +584,17 @@ export default function App() {
     }
     switchViewMode('mine');
     enterBook();
-    // La portada con su nombre se ve un momento y el libro se abre solo
+    // La portada con su nombre se ve un momento y el libro se abre solo. Si
+    // aún está en blanco, se abre directamente el editor de la primera página.
+    const startDesigning = !hasBlocks(book);
     setTimeout(() => {
-      if (phaseRef.current === 'closed') handleOpenBook();
-      showToast('Toca una página para empezar a diseñar', 'color-palette-outline');
+      if (phaseRef.current !== 'closed') return;
+      if (startDesigning) {
+        setActiveSpreadIndex(0);
+        openEditorWhenOpen.current = true;
+      }
+      handleOpenBook();
+      if (!startDesigning) showToast('Toca una página para seguir diseñando', 'color-palette-outline');
     }, AUTO_OPEN_DELAY_MS);
   };
 
@@ -560,111 +632,104 @@ export default function App() {
 
   /* ==================== MENÚS ==================== */
 
-  const menuItems: ActionSheetItem[] = [
-    ...(isBookOpen
-      ? [
-          {
-            key: 'prev',
-            label: 'Pliego anterior',
-            icon: 'chevron-back' as IconName,
-            disabled: safeIndex === 0,
-            onPress: () => requestSpread(safeIndex - 1),
-          },
-          {
-            key: 'next',
-            label: 'Pliego siguiente',
-            icon: 'chevron-forward' as IconName,
-            disabled: safeIndex >= spreads.length - 1,
-            onPress: () => requestSpread(safeIndex + 1),
-          },
-        ]
-      : [{ key: 'open', label: 'Abrir el cuaderno', icon: 'book-outline' as IconName, onPress: handleOpenBook }]),
-    ...(!isReadOnly
-      ? [
-          {
-            key: 'edit',
-            label: 'Diseñar este pliego',
-            icon: 'color-palette-outline' as IconName,
-            onPress: () => openEditor('left'),
-          },
-          // Los pliegos se añaden con el libro abierto, donde se ve dónde quedan
-          ...(isBookOpen
-            ? [
-                {
-                  key: 'add',
-                  label: 'Añadir pliego en blanco',
-                  icon: 'add-circle-outline' as IconName,
-                  onPress: handleAddSpread,
-                },
-                {
-                  key: 'delete',
-                  label: 'Eliminar este pliego',
-                  icon: 'trash-outline' as IconName,
-                  destructive: true,
-                  disabled: book.spreads.length <= 1,
-                  onPress: handleDeleteSpread,
-                },
-              ]
-            : []),
-          {
-            key: 'dedication',
-            label: book.dedicatedTo ? `Dedicatoria: para ${book.dedicatedTo}` : 'Poner una dedicatoria',
-            icon: 'create-outline' as IconName,
-            onPress: editDedication,
-          },
-          {
-            key: 'gift',
-            label: 'Envolver y enviar el regalo',
-            icon: 'gift-outline' as IconName,
-            onPress: openGiftWrap,
-          },
-        ]
-      : []),
+  // Acciones condicionales con su tipo comprobado
+  const when = (condition: boolean, ...items: ActionSheetItem[]) => (condition ? items : []);
+
+  // Agrupado por tema. Pasar de pliego y cerrar el libro ya están a la vista en
+  // pantalla, así que no se repiten aquí.
+  const menuSections: ActionSheetSection[] = [
     {
-      key: 'picture',
-      label: 'Compartir imagen de este pliego',
-      icon: 'image-outline',
-      disabled: !isBookOpen,
-      onPress: handleSharePicture,
+      key: 'spread',
+      title: isBookOpen ? 'Este pliego' : undefined,
+      items: [
+        ...when(!isBookOpen, { key: 'open', label: 'Abrir el cuaderno', icon: 'book-outline', onPress: handleOpenBook }),
+        ...when(!isReadOnly, {
+          key: 'edit',
+          label: 'Diseñar este pliego',
+          hint: 'Fotos, textos y stickers',
+          icon: 'color-palette-outline',
+          onPress: () => openEditor('left'),
+        }),
+        // Los pliegos se añaden con el libro abierto, donde se ve dónde quedan
+        ...when(isBookOpen && !isReadOnly, {
+          key: 'add',
+          label: 'Añadir pliego en blanco',
+          icon: 'add-circle-outline',
+          onPress: handleAddSpread,
+        }),
+        ...when(isBookOpen, {
+          key: 'picture',
+          label: 'Compartir imagen de este pliego',
+          icon: 'image-outline',
+          onPress: handleSharePicture,
+        }),
+        ...when(isBookOpen && !isReadOnly, {
+          key: 'delete',
+          label: 'Eliminar este pliego',
+          icon: 'trash-outline',
+          destructive: true,
+          disabled: book.spreads.length <= 1,
+          onPress: handleDeleteSpread,
+        }),
+      ],
     },
     {
-      key: 'import',
-      label: 'Abrir un regalo que me enviaron',
-      icon: 'key-outline',
-      onPress: handleImportBook,
+      key: 'gift',
+      title: 'Tu regalo',
+      items: when(
+        !isReadOnly,
+        {
+          key: 'gift',
+          label: changedSinceSent ? 'Enviar la versión nueva' : 'Envolver y enviar el regalo',
+          hint: changedSinceSent ? 'Cambiaste el libro después de enviarlo' : 'Archivo cifrado + código secreto',
+          icon: 'gift-outline',
+          onPress: openGiftWrap,
+        },
+        {
+          key: 'dedication',
+          label: book.dedicatedTo ? `Dedicatoria: para ${book.dedicatedTo}` : 'Poner una dedicatoria',
+          icon: 'create-outline',
+          onPress: editDedication,
+        }
+      ),
     },
-    ...(receivedBook
-      ? [
-          isReadOnly
-            ? {
-                key: 'mine',
-                label: 'Ir a mi propio libro',
-                icon: 'person-outline' as IconName,
-                onPress: () => switchViewMode('mine'),
-              }
-            : {
-                key: 'received',
-                label: 'Ver el regalo que me hicieron',
-                icon: 'heart-outline' as IconName,
-                onPress: () => switchViewMode('received'),
-              },
-        ]
-      : []),
-    { key: 'home', label: 'Inicio', icon: 'home-outline', onPress: goHome },
-    ...(isBookOpen
-      ? [{ key: 'close', label: 'Cerrar el cuaderno', icon: 'book-outline' as IconName, onPress: handleCloseBook }]
-      : []),
-    ...(!isReadOnly
-      ? [
-          {
-            key: 'reset',
-            label: 'Empezar un libro nuevo',
-            icon: 'refresh' as IconName,
-            destructive: true,
-            onPress: handleResetBook,
-          },
-        ]
-      : []),
+    {
+      key: 'received',
+      title: 'Regalos recibidos',
+      items: [
+        {
+          key: 'import',
+          label: isReadOnly ? 'Abrir otro regalo' : 'Abrir un regalo que me enviaron',
+          icon: 'key-outline',
+          onPress: handleImportBook,
+        },
+        ...when(!!receivedBook && isReadOnly, {
+          key: 'mine',
+          label: 'Ir a mi propio libro',
+          icon: 'person-outline',
+          onPress: () => switchViewMode('mine'),
+        }),
+        ...when(!!receivedBook && !isReadOnly, {
+          key: 'received',
+          label: 'Ver el regalo que me hicieron',
+          icon: 'heart-outline',
+          onPress: () => switchViewMode('received'),
+        }),
+      ],
+    },
+    {
+      key: 'app',
+      items: [
+        { key: 'home', label: 'Inicio', icon: 'home-outline', onPress: goHome },
+        ...when(!isReadOnly, {
+          key: 'reset',
+          label: 'Empezar un libro nuevo',
+          icon: 'refresh',
+          destructive: true,
+          onPress: handleResetBook,
+        }),
+      ],
+    },
   ];
 
   const dockActions: { key: string; label: string; icon: IconName; onPress: () => void }[] = [
@@ -682,6 +747,17 @@ export default function App() {
     : 'Nuestros Recuerdos';
   const closedSubtitle =
     !isReadOnly && book.dedicatedTo ? `Regalo para ${book.dedicatedTo} · ${pagesLabel}` : pagesLabel;
+  const spreadIsEmpty = !!currentSpread && currentSpread.left.blocks.length + currentSpread.right.blocks.length === 0;
+  // El subtítulo dice cuál es el siguiente paso
+  const headerHint: { icon: IconName; text: string; color: string } = isReadOnly
+    ? { icon: 'gift-outline', text: `Regalo recibido · ${pagesLabel}`, color: 'rgba(255, 255, 255, 0.75)' }
+    : isBookOpen
+      ? spreadIsEmpty
+        ? { icon: 'add-circle-outline', text: 'Toca una página en blanco para empezar', color: 'rgba(255, 255, 255, 0.75)' }
+        : { icon: 'images-outline', text: 'Toca un marco para poner tu foto', color: 'rgba(255, 255, 255, 0.75)' }
+      : changedSinceSent
+        ? { icon: 'alert-circle-outline', text: 'Hay cambios sin enviar · toca Regalar', color: '#F6D58E' }
+        : { icon: 'heart', text: closedSubtitle, color: '#F2A7AE' };
   const showViewport = phase !== 'closed';
 
   return (
@@ -701,17 +777,9 @@ export default function App() {
               {headerTitle}
             </Text>
             <View style={styles.headerSubtitleRow}>
-              <Ionicons
-                name={isReadOnly ? 'gift-outline' : isBookOpen ? 'images-outline' : 'heart'}
-                size={13}
-                color={isBookOpen || isReadOnly ? 'rgba(255, 255, 255, 0.75)' : '#F2A7AE'}
-              />
-              <Text style={styles.headerSubtitleText}>
-                {isReadOnly
-                  ? `Regalo recibido · ${pagesLabel}`
-                  : isBookOpen
-                    ? 'Toca un marco para poner tu foto'
-                    : closedSubtitle}
+              <Ionicons name={headerHint.icon} size={13} color={headerHint.color} />
+              <Text style={styles.headerSubtitleText} numberOfLines={1}>
+                {headerHint.text}
               </Text>
             </View>
           </View>
@@ -772,10 +840,18 @@ export default function App() {
               <Pressable
                 onPress={isReadOnly ? goHome : openGiftWrap}
                 style={({ pressed }) => [styles.dockPrimary, pressed && styles.dockItemPressed]}
-                accessibilityLabel={isReadOnly ? 'Volver al inicio' : 'Envolver y enviar el regalo'}
+                accessibilityLabel={
+                  isReadOnly
+                    ? 'Volver al inicio'
+                    : changedSinceSent
+                      ? 'Enviar la versión nueva del regalo'
+                      : 'Envolver y enviar el regalo'
+                }
               >
                 <Ionicons name={isReadOnly ? 'home-outline' : 'gift-outline'} size={22} color="#2B3654" />
                 <Text style={styles.dockPrimaryLabel}>{isReadOnly ? 'Inicio' : 'Regalar'}</Text>
+                {/* Aviso: el libro cambió después de enviarlo */}
+                {!isReadOnly && changedSinceSent && <View style={styles.dockBadge} />}
               </Pressable>
             </View>
           </View>
@@ -791,7 +867,7 @@ export default function App() {
               ? `Pliego ${safeIndex + 1} de ${spreads.length} · Págs. ${safeIndex * 2 + 1}–${safeIndex * 2 + 2}`
               : pagesLabel
           }
-          items={menuItems}
+          sections={menuSections}
           onClose={() => setIsMenuOpen(false)}
         />
 
@@ -799,8 +875,13 @@ export default function App() {
           visible={isGiftWrapOpen}
           code={giftCode}
           dedicatedTo={book.dedicatedTo}
-          pages={book.spreads.length * 2}
+          summary={bookSummary}
+          status={giftStatus}
+          changedSinceSent={changedSinceSent}
           onSendFile={handleSendGiftFile}
+          onCodeShared={handleCodeShared}
+          onDesign={designFromGift}
+          onSharePicture={isBookOpen && !isReadOnly ? sharePictureFromGift : undefined}
           onClose={() => setIsGiftWrapOpen(false)}
         />
 
@@ -815,9 +896,12 @@ export default function App() {
             visible={editor.visible}
             spread={book.spreads[safeIndex]}
             spreadIndex={safeIndex}
+            spreadCount={book.spreads.length}
             initialSide={editor.side}
             onChange={(spread) => updateSpread(safeIndex, spread)}
             onPickPhoto={handlePickPhoto}
+            onGoToSpread={setActiveSpreadIndex}
+            onAddSpread={handleAddSpreadFromEditor}
             onClose={() => setEditor((e) => ({ ...e, visible: false }))}
           />
         )}
@@ -958,5 +1042,16 @@ const styles = StyleSheet.create({
     color: '#2B3654',
     fontSize: 11,
     fontWeight: '700',
+  },
+  dockBadge: {
+    position: 'absolute',
+    top: 5,
+    right: 18,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#D9822B',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
   },
 });

@@ -1,6 +1,7 @@
 import React from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { sheetBottomPadding } from './insets';
 
 const CLOSE_DELAY_MS = 320;
 
@@ -9,79 +10,112 @@ export interface ActionSheetItem {
   label: string;
   icon: React.ComponentProps<typeof Ionicons>['name'];
   onPress: () => void;
+  /** Línea secundaria bajo la etiqueta. */
+  hint?: string;
   destructive?: boolean;
   disabled?: boolean;
+}
+
+/** Grupo de acciones relacionadas, con un título opcional encima. */
+export interface ActionSheetSection {
+  key: string;
+  title?: string;
+  items: ActionSheetItem[];
 }
 
 interface ActionSheetProps {
   visible: boolean;
   title: string;
   subtitle?: string;
-  items: ActionSheetItem[];
+  sections: ActionSheetSection[];
   onClose: () => void;
 }
 
 /**
  * Hoja de acciones inferior. Sustituye a Alert.alert para el menú: en Android
- * Alert muestra como máximo 3 botones y se perdían opciones.
+ * Alert muestra como máximo 3 botones y se perdían opciones. Las acciones van
+ * agrupadas y la lista se desplaza: en un móvil pequeño ya no se sale de la
+ * pantalla.
  */
 export const ActionSheet: React.FC<ActionSheetProps> = ({
   visible,
   title,
   subtitle,
-  items,
+  sections,
   onClose,
-}) => (
-  <Modal
-    visible={visible}
-    transparent
-    animationType="slide"
-    // En Android el oscurecido también cubre la barra de estado, como en iOS
-    statusBarTranslucent
-    onRequestClose={onClose}
-  >
-    <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar menú" />
-    <View style={styles.sheet}>
-      <View style={styles.handle} />
-      <Text style={styles.title}>{title}</Text>
-      {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+}) => {
+  const { height } = useWindowDimensions();
+  const visibleSections = sections.filter((s) => s.items.length > 0);
 
-      <View style={styles.list}>
-        {items.map((item) => (
-          <Pressable
-            key={item.key}
-            disabled={item.disabled}
-            onPress={() => {
-              onClose();
-              // Tras cerrar la hoja: en iOS un Alert lanzado mientras el modal se cierra no se muestra
-              setTimeout(item.onPress, CLOSE_DELAY_MS);
-            }}
-            style={({ pressed }) => [
-              styles.row,
-              pressed && styles.rowPressed,
-              item.disabled && styles.rowDisabled,
-            ]}
-          >
-            <View style={[styles.iconWrap, item.destructive && styles.iconWrapDestructive]}>
-              <Ionicons
-                name={item.icon}
-                size={18}
-                color={item.destructive ? '#C0392B' : '#2B3654'}
-              />
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      // En Android el oscurecido también cubre la barra de estado, como en iOS
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar menú" />
+      <View style={[styles.sheet, { maxHeight: height * 0.88, paddingBottom: sheetBottomPadding() }]}>
+        <View style={styles.handle} />
+        <Text style={styles.title}>{title}</Text>
+        {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {visibleSections.map((section) => (
+            <View key={section.key}>
+              {section.title ? <Text style={styles.sectionTitle}>{section.title}</Text> : null}
+              <View style={styles.list}>
+                {section.items.map((item, index) => (
+                  <Pressable
+                    key={item.key}
+                    disabled={item.disabled}
+                    onPress={() => {
+                      onClose();
+                      // Tras cerrar la hoja: en iOS un Alert lanzado mientras el modal se cierra no se muestra
+                      setTimeout(item.onPress, CLOSE_DELAY_MS);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !!item.disabled }}
+                    style={({ pressed }) => [
+                      styles.row,
+                      index < section.items.length - 1 && styles.rowDivider,
+                      pressed && styles.rowPressed,
+                      item.disabled && styles.rowDisabled,
+                    ]}
+                  >
+                    <View style={[styles.iconWrap, item.destructive && styles.iconWrapDestructive]}>
+                      <Ionicons
+                        name={item.icon}
+                        size={18}
+                        color={item.destructive ? '#C0392B' : '#2B3654'}
+                      />
+                    </View>
+                    <View style={styles.rowBody}>
+                      <Text style={[styles.rowLabel, item.destructive && styles.rowLabelDestructive]}>
+                        {item.label}
+                      </Text>
+                      {item.hint ? <Text style={styles.rowHint}>{item.hint}</Text> : null}
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
             </View>
-            <Text style={[styles.rowLabel, item.destructive && styles.rowLabelDestructive]}>
-              {item.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+          ))}
+        </ScrollView>
 
-      <Pressable onPress={onClose} style={({ pressed }) => [styles.cancel, pressed && styles.rowPressed]}>
-        <Text style={styles.cancelText}>Cancelar</Text>
-      </Pressable>
-    </View>
-  </Modal>
-);
+        <Pressable onPress={onClose} style={({ pressed }) => [styles.cancel, pressed && styles.rowPressed]}>
+          <Text style={styles.cancelText}>Cancelar</Text>
+        </Pressable>
+      </View>
+    </Modal>
+  );
+};
 
 const styles = StyleSheet.create({
   backdrop: {
@@ -98,7 +132,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 18,
     paddingTop: 10,
-    paddingBottom: 30,
   },
   handle: {
     alignSelf: 'center',
@@ -120,8 +153,24 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 3,
   },
+  scroll: {
+    flexGrow: 0,
+    marginTop: 6,
+  },
+  scrollContent: {
+    paddingBottom: 4,
+  },
+  sectionTitle: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    color: '#8F877B',
+    marginTop: 12,
+    marginLeft: 6,
+  },
   list: {
-    marginTop: 14,
+    marginTop: 8,
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     overflow: 'hidden',
@@ -131,7 +180,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    minHeight: 56,
+    paddingVertical: 10,
+  },
+  rowDivider: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#ECE6DB',
   },
@@ -152,10 +204,18 @@ const styles = StyleSheet.create({
   iconWrapDestructive: {
     backgroundColor: '#FBECEA',
   },
+  rowBody: {
+    flex: 1,
+  },
   rowLabel: {
     fontSize: 15.5,
     fontWeight: '600',
     color: '#2B2623',
+  },
+  rowHint: {
+    fontSize: 12.5,
+    color: '#8F877B',
+    marginTop: 1,
   },
   rowLabelDestructive: {
     color: '#C0392B',

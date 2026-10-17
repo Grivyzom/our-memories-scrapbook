@@ -30,6 +30,8 @@
   - *Título*, *Polaroid*, *Ventana retro*, *Reproductor*, *Ticket vintage*, *Tira de negativos*, *Nuestra canción*, *Nota* de máquina de escribir, *Etiquetas de amor* y *Stickers* (flores secas, rosas, querubín, corazones).
   - Cada componente tiene un tamaño fijo (ancho completo o medio ancho): el editor muestra el espacio usado y sólo ofrece lo que cabe, así la página nunca se desborda.
   - Textos editables, subir/bajar, mover a la otra página, quitar, y fotos por hueco.
+  - Una página en blanco ofrece atajos para empezar con un toque (*Título*, *Polaroid*, *Nota*) y al añadir un componente con fotos se abre la galería directamente; la *Tira de negativos* deja elegir sus 4 fotos de una vez.
+  - Se pasa de un pliego a otro (o se añade uno nuevo con **+**) sin salir del editor, y cuando una página se llena el botón inferior lleva a la siguiente.
 - 🎨 **Ilustraciones y Stickers Vectoriales SVG**:
   - Ramilletes botánicos y flores secas de azahar.
   - Querubín renacentista en trazo vintage.
@@ -45,11 +47,12 @@
   - El libro se guarda automáticamente con `AsyncStorage`. Los álbumes del formato anterior se convierten a componentes sin perder sus fotos.
 - 📚 **Pliegos ilimitados**: botón **+ Pliego** para añadir pliegos en blanco, eliminar pliegos y navegar entre ellos con el paso de página.
 - 🎁 **Pensado para regalar**:
-  - Al abrir la app por primera vez se elige qué hacer: *Crear un regalo* (se pregunta para quién es y su nombre aparece en la portada) o *Abrir un regalo*. Quien ya tiene un libro empezado puede seguir con él, y quien recibió uno vuelve directo a verlo.
+  - Al abrir la app por primera vez se elige qué hacer: *Crear un regalo* (se pregunta para quién es, con una vista previa de cómo queda en la portada) o *Abrir un regalo*. Tras la dedicatoria el libro se abre y entra directo al editor de la primera página. Quien ya tiene un libro empezado puede seguir con él, y quien recibió uno vuelve directo a verlo.
   - Los pliegos se añaden con el libro abierto: en el último pliego el botón *siguiente* se convierte en **+**.
   - *Regalar* envuelve el libro: genera un **código secreto** (`XXXX-XXXX-XXXX`) y un único archivo `.recuerdos.json` **cifrado** con él (XSalsa20-Poly1305 con `tweetnacl`; la clave sale del código con SHA-512 iterado). El archivo se envía por WhatsApp, correo, AirDrop… y el código se le da a la pareja aparte, mejor en persona.
+  - Antes de envolverlo se revisa el libro (páginas en blanco, marcos sin foto) con un botón *Completar* que abre el editor donde falta algo; un libro vacío invita a diseñarlo primero. Los dos pasos (enviar el archivo, dar el código) quedan marcados al hacerlos, el código se puede copiar, y si el libro cambia después de enviarlo se avisa en el botón *Regalar* para enviar la versión nueva.
   - Sin el código el archivo no deja ver nada, aunque se reenvíe o quede en un chat. El código no viaja dentro del archivo y no hace falta ningún servidor. Si el libro cambia se vuelve a enviar con el mismo código.
-  - Quien lo recibe toca *Abrir un regalo*, elige el archivo y escribe el código: lo ve en modo sólo lectura, con su portada y paso de página. Los libros sin cifrar de versiones anteriores se siguen abriendo.
+  - Quien lo recibe toca *Abrir un regalo*, elige el archivo y escribe el código (o lo pega: se reconoce aunque se pegue el mensaje entero y se abre solo): lo ve en modo sólo lectura, con su portada y paso de página. Los libros sin cifrar de versiones anteriores se siguen abriendo.
   - *Compartir imagen de este pliego*: captura PNG en alta resolución (`react-native-view-shot`).
 
 ---
@@ -131,6 +134,7 @@ our-memories-scrapbook/
 | **expo-file-system** | `~18.0.4` | Almacenamiento y copia local permanente de archivos |
 | **@react-native-async-storage/async-storage** | `1.23.1` | Persistencia del estado del álbum y de los pliegos |
 | **expo-sharing** | `~13.0.0` | Invocación del menú nativo de compartir del sistema |
+| **expo-clipboard** | `~7.0.1` | Copiar y pegar el código secreto del regalo |
 | **expo-linear-gradient** | `~14.0.1` | Degradados visuales de fondo |
 
 ---

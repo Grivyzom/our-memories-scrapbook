@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { SPREAD_HEIGHT, SPREAD_WIDTH } from './defaultData';
-import { BlockType, PageBlock, StickerKind } from '../types/scrapbook';
+import { Book, BlockType, PageBlock, PageSide, StickerKind } from '../types/scrapbook';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -173,6 +173,9 @@ export const CATALOG_ORDER: BlockType[] = [
   'sticker',
 ];
 
+/** Atajos para empezar una página en blanco con un solo toque. */
+export const QUICK_START: BlockType[] = ['title', 'polaroid', 'note'];
+
 let blockCounter = 0;
 export const newBlockId = () => {
   blockCounter += 1;
@@ -229,3 +232,43 @@ export const fitsInPage = (blocks: PageBlock[]) => measureBlocks(blocks) <= CONT
 
 /** Fracción de la página ocupada (0..1+). */
 export const pageFill = (blocks: PageBlock[]) => measureBlocks(blocks) / CONTENT_HEIGHT;
+
+/* ---- Estado del libro antes de regalarlo ---- */
+
+export interface BookSummary {
+  pages: number;
+  /** Páginas con al menos un componente. */
+  filledPages: number;
+  photos: number;
+  /** Marcos de foto que siguen vacíos. */
+  emptyPhotoSlots: number;
+}
+
+export const summarizeBook = (book: Book): BookSummary => {
+  const summary: BookSummary = { pages: book.spreads.length * 2, filledPages: 0, photos: 0, emptyPhotoSlots: 0 };
+  for (const spread of book.spreads) {
+    for (const page of [spread.left, spread.right]) {
+      if (page.blocks.length > 0) summary.filledPages += 1;
+      for (const block of page.blocks) {
+        for (const uri of block.photos) {
+          if (uri) summary.photos += 1;
+          else summary.emptyPhotoSlots += 1;
+        }
+      }
+    }
+  }
+  return summary;
+};
+
+/** Primera página que falta completar (en blanco o con marcos sin foto). */
+export const findIncompletePage = (book: Book): { spreadIndex: number; side: PageSide } | null => {
+  for (const [spreadIndex, spread] of book.spreads.entries()) {
+    for (const side of ['left', 'right'] as PageSide[]) {
+      const blocks = spread[side].blocks;
+      if (blocks.length === 0 || blocks.some((b) => b.photos.some((uri) => !uri))) {
+        return { spreadIndex, side };
+      }
+    }
+  }
+  return null;
+};
