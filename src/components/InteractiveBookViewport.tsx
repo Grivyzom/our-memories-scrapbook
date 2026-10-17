@@ -4,19 +4,16 @@ import {
   Text,
   StyleSheet,
   Dimensions,
+  BackHandler,
   Platform,
   Pressable,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
-  Easing,
-  cancelAnimation,
   runOnJS,
   useSharedValue,
   useAnimatedStyle,
-  withRepeat,
   withSpring,
-  withTiming,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraFocusZone, PageSide, ScrapbookSpreadData } from '../types/scrapbook';
@@ -79,12 +76,12 @@ const TILT_BY_ZONE: Record<CameraFocusZone, number> = {
 };
 const CAMERA_PERSPECTIVE = 1500;
 /*
- * Balanceo en reposo sólo en iOS. En Android (nueva arquitectura) cada frame
- * de una animación de Reanimated pasa por el árbol de vistas: con el libro
- * abierto eso era trabajo continuo, sin pausa, que se notaba en los gestos,
- * en el paso de página y en la batería de los móviles de gama media.
+ * Sin balanceo en reposo en ninguna plataforma. Era una animación infinita
+ * por frame: en Android (nueva arquitectura) cada frame pasa por el árbol de
+ * vistas, y en iOS además invalidaba la textura rasterizada del pliego
+ * (shouldRasterizeIOS) en cada frame, así que se repintaban fotos y sombras
+ * sin parar. Con el libro quieto no se hace ningún trabajo.
  */
-const IDLE_SWAY = Platform.OS === 'ios';
 
 // Deslizar horizontalmente (en "Ambas") pasa de página
 const SWIPE_MIN_DISTANCE = 60;
@@ -139,23 +136,9 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const rotationDeg = useSharedValue(0);
   const tiltDeg = useSharedValue(TILT_BY_ZONE.full);
   const swipeEnabled = useSharedValue(1);
-  // Balanceo muy sutil en reposo: el libro "respira" sobre la mesa
-  const idleSway = useSharedValue(0);
   // Escala por encima de 1: el pliego deja de cachearse como textura (se vería borroso)
   const [isZoomedIn, setIsZoomedIn] = useState(false);
   const zoomedFlag = useSharedValue(0);
-
-  useEffect(() => {
-    if (!IDLE_SWAY) return;
-    if (isZoomedIn) {
-      // Sin textura cacheada el balanceo obligaría a repintar todo el pliego en cada frame
-      cancelAnimation(idleSway);
-      idleSway.value = withTiming(Math.round(idleSway.value), { duration: 400 });
-      return;
-    }
-    idleSway.value = 0;
-    idleSway.value = withRepeat(withTiming(1, { duration: 7200, easing: Easing.linear }), -1, false);
-  }, [isZoomedIn]);
 
   const applyCameraZone = (zone: CameraFocusZone) => {
     setFocusZone(zone);
@@ -256,6 +239,29 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
     turnTo(navRequest.index);
   }, [navRequest, turnTo]);
 
+  /* ==================== BOTÓN ATRÁS (ANDROID) ==================== */
+  // Con zoom, una sola página o el pliego girado, "atrás" vuelve primero a
+  // "Ambas" y sólo la siguiente pulsación cierra el libro (la escucha de
+  // App.tsx se registró antes y BackHandler llama primero a la más reciente)
+  const handleBackPress = () => {
+    if (!interactive) return false;
+    const moved =
+      focusZone !== 'full' ||
+      Math.abs(savedScale.value - fullSpreadScale) > 0.01 ||
+      Math.abs(savedTranslateX.value) > 1 ||
+      Math.abs(savedTranslateY.value) > 1;
+    if (!moved) return false;
+    applyCameraZone('full');
+    return true;
+  };
+  const backPressRef = useRef(handleBackPress);
+  backPressRef.current = handleBackPress;
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => backPressRef.current());
+    return () => sub.remove();
+  }, []);
+
   /* ==================== GESTOS ==================== */
   // Pan con amortiguación; en "Ambas" un deslizamiento rápido pasa de página
   const panGesture = Gesture.Pan()
@@ -305,23 +311,16 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
   const composedGesture = Gesture.Simultaneous(panGesture, pinchGesture);
 
-  const animatedViewportStyle = useAnimatedStyle(() => {
-    // El balanceo se apaga en vista apaisada (libro sin inclinación)
-    const swayAmount = Math.min(1, tiltDeg.value / 9);
-    // Empieza en 0 para que el relevo desde la portada no dé un salto
-    const sway = Math.sin(idleSway.value * 2 * Math.PI) * 0.5 * swayAmount;
-    return {
-      transform: [
-        { perspective: CAMERA_PERSPECTIVE },
-        { translateX: translateX.value },
-        { translateY: translateY.value },
-        { rotateX: `${tiltDeg.value + sway * 1.2}deg` },
-        { rotateY: `${sway * 1.6}deg` },
-        { rotateZ: `${rotationDeg.value}deg` },
-        { scale: scale.value },
-      ],
-    };
-  });
+  const animatedViewportStyle = useAnimatedStyle(() => ({
+    transform: [
+      { perspective: CAMERA_PERSPECTIVE },
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { rotateX: `${tiltDeg.value}deg` },
+      { rotateZ: `${rotationDeg.value}deg` },
+      { scale: scale.value },
+    ],
+  }));
 
   /* ==================== UI ==================== */
   const isFlipping = flip !== null;
@@ -395,8 +394,8 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       <GestureDetector gesture={composedGesture}>
         <Animated.View style={styles.gestureStage}>
           <Animated.View style={animatedViewportStyle}>
-            {/* Con el pliego a su tamaño o menor se cachea entero en la GPU: el balanceo,
-                la inclinación y el encuadre sólo mueven una textura en vez de repintar
+            {/* Con el pliego a su tamaño o menor se cachea entero en la GPU: la
+                inclinación y el encuadre sólo mueven una textura en vez de repintar
                 fotos, SVG y sombras. Con zoom > 1 se pinta en vivo para no perder nitidez. */}
             <View
               ref={captureRef}

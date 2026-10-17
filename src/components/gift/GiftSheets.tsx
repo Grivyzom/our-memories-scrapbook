@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { SYSTEM_INSETS } from '../../constants/systemInsets';
 import { formatGiftCode, isCompleteGiftCode } from '../../services/giftCrypto';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -270,7 +271,8 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 18,
     paddingTop: 10,
-    paddingBottom: 30,
+    // Sobre el indicador de inicio de iOS (34 pt) sin pegarse a él
+    paddingBottom: Math.max(30, SYSTEM_INSETS.bottom + 16),
   },
   handle: {
     alignSelf: 'center',

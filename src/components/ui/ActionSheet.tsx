@@ -1,6 +1,7 @@
 import React from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { SYSTEM_INSETS } from '../../constants/systemInsets';
 
 const CLOSE_DELAY_MS = 320;
 
@@ -98,7 +99,8 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 18,
     paddingTop: 10,
-    paddingBottom: 30,
+    // Sobre el indicador de inicio de iOS (34 pt) sin pegarse a él
+    paddingBottom: Math.max(30, SYSTEM_INSETS.bottom + 16),
   },
   handle: {
     alignSelf: 'center',
