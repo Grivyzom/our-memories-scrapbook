@@ -1,23 +1,19 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, {
-  Easing,
   SharedValue,
-  runOnJS,
   useAnimatedStyle,
   useDerivedValue,
   useSharedValue,
-  withDelay,
-  withTiming,
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SPREAD_HEIGHT, SPREAD_WIDTH } from '../constants/defaultData';
 import {
   LeafSpec,
   ProjectionOptions,
-  leafFlightCurve,
   makeLight,
   stackZIndex,
+  turnFraction,
 } from './book3d/engine';
 import { LeafFace, LeafFaceKind, leafFaceWidth } from './book3d/LeafFace';
 import { SpreadPaper } from './ScrapbookSpread';
@@ -36,6 +32,16 @@ import { PageSide, ScrapbookSpreadData } from '../types/scrapbook';
  * mismo papel que el pliego de debajo, ver SpreadPaper). Antes se capturaban
  * en imagen los dos pliegos antes de girar: en Android cada captura tardaba
  * cientos de milisegundos y el giro arrancaba con retraso.
+ *
+ * La hoja no se anima a sí misma: dibuja un progreso compartido (`progress`)
+ * que mueve quien la pidió — el dedo mientras se arrastra, un muelle al
+ * soltar o una curva temporal al usar los botones (ver InteractiveBookViewport).
+ * Así un mismo giro puede empezar con el dedo, cancelarse a medias o terminar
+ * con la inercia del lanzamiento, todo en el hilo de UI y sin pasar por React.
+ *
+ * Las luces que cambian con el giro (curvatura y brillo especular) van fuera
+ * de la textura cacheada de cada cara: si no, Android repintaría la página
+ * entera en cada frame del giro.
  * ========================================================================= */
 
 export type FlipDirection = 'next' | 'prev';
@@ -55,6 +61,8 @@ export interface FlipRequest {
   to: FlipSpread;
   /** Libro editable: los huecos vacíos se dibujan con su invitación ("Elegir foto"). */
   editable: boolean;
+  /** Lo guía el dedo (puede cancelarse) en vez de una animación de principio a fin. */
+  interactive: boolean;
 }
 
 // Escenario = tapa exterior del pliego (ver ScrapbookSpread.outerBookCoverBase)
@@ -65,12 +73,9 @@ const PAGE_INSET_Y = (STAGE_HEIGHT - SPREAD_HEIGHT) / 2;
 const PAGE_WIDTH = SPREAD_WIDTH / 2;
 const SPINE_X = STAGE_WIDTH / 2;
 
-// Coreografía
 const LEAF_COUNT = 1;
 // Una sola cara por lado: sin juntas visibles
 const SEGMENTS = 1;
-const STAGGER_MS = 80;
-const FLIGHT_MS = 920;
 // Espera máxima a las fotos del pliego que se abandona (ya están en memoria: suele ser 1–2 frames)
 const READY_TIMEOUT_MS = 250;
 
@@ -96,19 +101,21 @@ const PAPER_BACK = '#F7F1E3';
 
 interface PageFlipOverlayProps {
   request: FlipRequest;
-  /** La animación cubre ya el pliego viejo: se puede cambiar el contenido de debajo. */
+  /** Progreso del paso de página (0 = sin pasar, 1 = pasada; ver turnFraction). */
+  progress: SharedValue<number>;
+  /** Opacidad del conjunto; 0 = oculto (no se proyecta nada). */
+  presence: SharedValue<number>;
+  /** El giro ya se ve y cubre el pliego viejo: se puede cambiar el de debajo. */
   onReady: () => void;
-  onFinished: () => void;
 }
 
 export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
   request,
+  progress,
+  presence,
   onReady,
-  onFinished,
 }) => {
   const { dir, from, to, editable } = request;
-  const [running, setRunning] = useState(false);
-  const presence = useSharedValue(0);
   const loaded = useRef(new Set<string>());
   const readyFired = useRef(false);
 
@@ -116,7 +123,6 @@ export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
     if (readyFired.current) return;
     readyFired.current = true;
     presence.value = 1;
-    setRunning(true);
     onReady();
   }, [onReady, presence]);
 
@@ -139,12 +145,6 @@ export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
   );
   const staticLoaded = useCallback(() => handleOldLoaded('static'), [handleOldLoaded]);
   const leafLoaded = useCallback(() => handleOldLoaded('leaf'), [handleOldLoaded]);
-
-  const handleLastLanded = useCallback(() => {
-    presence.value = withTiming(0, { duration: 160 }, (finished) => {
-      if (finished) runOnJS(onFinished)();
-    });
-  }, [onFinished, presence]);
 
   const coverStyle = useAnimatedStyle(() => ({ opacity: presence.value }));
 
@@ -174,7 +174,7 @@ export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
       <FlipLeaf
         index={0}
         dir={dir}
-        running={running}
+        progress={progress}
         presence={presence}
         // Anverso = página derecha del lomo, reverso = izquierda
         front={dir === 'next' ? from : to}
@@ -182,7 +182,6 @@ export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
         editable={editable}
         onFrontLoaded={dir === 'next' ? leafLoaded : undefined}
         onBackLoaded={dir === 'next' ? undefined : leafLoaded}
-        onLanded={handleLastLanded}
       />
     </View>
   );
@@ -200,46 +199,32 @@ const halfFrame = (left: number) => ({
 interface FlipLeafProps {
   index: number;
   dir: FlipDirection;
-  running: boolean;
+  progress: SharedValue<number>;
   presence: SharedValue<number>;
   front: FlipSpread;
   back: FlipSpread;
   editable: boolean;
   onFrontLoaded?: () => void;
   onBackLoaded?: () => void;
-  onLanded?: () => void;
 }
 
 const FlipLeaf: React.FC<FlipLeafProps> = ({
   index,
   dir,
-  running,
+  progress,
   presence,
   front,
   back,
   editable,
   onFrontLoaded,
   onBackLoaded,
-  onLanded,
 }) => {
-  const progress = useSharedValue(0);
-
-  useEffect(() => {
-    if (!running) return;
-    progress.value = withDelay(
-      index * STAGGER_MS,
-      withTiming(1, { duration: FLIGHT_MS, easing: Easing.linear }, (finished) => {
-        if (finished && onLanded) runOnJS(onLanded)();
-      })
-    );
-  }, [running]);
-
-  const curve = useDerivedValue(() => leafFlightCurve(progress.value));
+  // El sobrepaso del muelle se refleja: la hoja rebota en la mesa (ver turnFraction)
   const theta = useDerivedValue(() => {
-    const c = Math.min(1, curve.value);
+    const c = turnFraction(progress.value);
     return dir === 'next' ? 180 * c : 180 * (1 - c);
   });
-  // Hoja rígida: la curvatura la pone el degradado de luz (LeafCurlShade)
+  // Hoja rígida: la curvatura la ponen la luz y el brillo que la recorren (LeafLight)
   const bend = useSharedValue(0);
   const zIndex = useDerivedValue(() => {
     // En el lado de salida manda la primera hoja; en el de llegada, la última en caer
@@ -278,6 +263,7 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
         // La página no cambia durante el giro: se mueve como una textura
         rasterize
         style={{ backgroundColor: isFront ? PAPER_FRONT : PAPER_BACK }}
+        overlay={<LeafLight theta={theta} fromSpineLeft={isFront} faceWidth={w} />}
       >
         <PageSlice
           page={isFront ? front : back}
@@ -286,7 +272,7 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
           faceLeft={centerX - w / 2}
           onLoaded={isFront ? onFrontLoaded : onBackLoaded}
         />
-        <LeafCurlShade theta={theta} fromSpineLeft={isFront} />
+        <SpineFoldShade fromSpineLeft={isFront} />
       </LeafFace>
     );
   };
@@ -303,40 +289,76 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
 
 /* ======================= CURVATURA DEL PAPEL ======================= */
 
+/** Sombra del pliegue junto al lomo: fija, como en el pliego (va dentro de la textura). */
+const SpineFoldShade: React.FC<{ fromSpineLeft: boolean }> = ({ fromSpineLeft }) => (
+  <LinearGradient
+    pointerEvents="none"
+    colors={['rgba(70,45,20,0.22)', 'rgba(70,45,20,0)']}
+    start={{ x: fromSpineLeft ? 0 : 1, y: 0.5 }}
+    end={{ x: fromSpineLeft ? 0.16 : 0.84, y: 0.5 }}
+    style={StyleSheet.absoluteFill}
+  />
+);
+
+// Ancho del brillo especular respecto a la cara
+const GLINT_WIDTH = 0.42;
+
 /**
- * Luz continua sobre toda la cara: sombra junto al lomo, brillo en el centro
- * (donde el papel se abomba) y un leve oscurecido en el canto. Su intensidad
- * crece con la altura de la hoja, así tumbada encaja con el pliego de debajo.
+ * Luz de la hoja en el aire (fuera de la textura cacheada):
+ * - Curvatura: sombra junto al lomo, brillo donde el papel se abomba y un leve
+ *   oscurecido en el canto. Crece con la altura de la hoja, así tumbada encaja
+ *   al píxel con el pliego de debajo.
+ * - Brillo especular: una franja de luz que recorre la hoja mientras gira.
+ *   Al levantarse, el canto libre se retrasa por el aire y el abombamiento (y
+ *   con él el reflejo) se desplaza del lomo hacia el canto; al caer, vuelve.
+ *   Es lo que hace que el ojo lea una superficie curva y no un cartón plano.
  */
-const LeafCurlShade: React.FC<{ theta: SharedValue<number>; fromSpineLeft: boolean }> = ({
-  theta,
-  fromSpineLeft,
-}) => {
-  const style = useAnimatedStyle(() => ({
+const LeafLight: React.FC<{
+  theta: SharedValue<number>;
+  fromSpineLeft: boolean;
+  faceWidth: number;
+}> = ({ theta, fromSpineLeft, faceWidth }) => {
+  const glintW = faceWidth * GLINT_WIDTH;
+  const curlStyle = useAnimatedStyle(() => ({
     opacity: Math.round(Math.sin((theta.value * Math.PI) / 180) * 100) / 100,
   }));
+  const glintStyle = useAnimatedStyle(() => {
+    const rad = (theta.value * Math.PI) / 180;
+    const lift = Math.sin(rad);
+    // Distancia del centro del brillo al lomo (fracción de la cara)
+    const fromSpine = 0.3 + 0.42 * lift * lift;
+    const center = fromSpineLeft ? fromSpine * faceWidth : (1 - fromSpine) * faceWidth;
+    return {
+      opacity: Math.round(lift * 100) / 100,
+      transform: [{ translateX: Math.round((center - glintW / 2) * 2) / 2 }],
+    };
+  });
   return (
     <>
-      {/* Sombra del pliegue junto al lomo: siempre presente, como en el pliego */}
-      <LinearGradient
-        pointerEvents="none"
-        colors={['rgba(70,45,20,0.22)', 'rgba(70,45,20,0)']}
-        start={{ x: fromSpineLeft ? 0 : 1, y: 0.5 }}
-        end={{ x: fromSpineLeft ? 0.16 : 0.84, y: 0.5 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, style]}>
+      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, curlStyle]}>
         <LinearGradient
           colors={[
             'rgba(60,38,16,0.30)',
             'rgba(60,38,16,0.06)',
-            'rgba(255,255,255,0.16)',
-            'rgba(255,255,255,0.04)',
-            'rgba(60,38,16,0.14)',
+            'rgba(255,255,255,0.10)',
+            'rgba(255,255,255,0.02)',
+            'rgba(60,38,16,0.16)',
           ]}
-          locations={[0, 0.18, 0.5, 0.78, 1]}
+          locations={[0, 0.18, 0.5, 0.8, 1]}
           start={{ x: fromSpineLeft ? 0 : 1, y: 0.5 }}
           end={{ x: fromSpineLeft ? 1 : 0, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.glint, { width: glintW }, glintStyle]}
+      >
+        <LinearGradient
+          colors={['rgba(255,252,240,0)', 'rgba(255,252,240,0.2)', 'rgba(255,252,240,0)']}
+          locations={[0, 0.5, 1]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
           style={StyleSheet.absoluteFill}
         />
       </Animated.View>
@@ -346,7 +368,12 @@ const LeafCurlShade: React.FC<{ theta: SharedValue<number>; fromSpineLeft: boole
 
 /* ========================= SOMBRA PROYECTADA ========================= */
 
-// Una hoja en el aire oscurece la página sobre la que vuela: deja ver el "aire" entre hojas
+/*
+ * Una hoja en el aire oscurece la página sobre la que vuela: deja ver el "aire"
+ * entre hojas. Su ancho sigue a la proyección de la hoja sobre la mesa y es más
+ * densa cerca de la mesa (sombra de contacto) que con la hoja en vertical,
+ * donde la luz la difumina.
+ */
 const LeafCastShadow: React.FC<{ theta: SharedValue<number>; presence: SharedValue<number> }> = ({
   theta,
   presence,
@@ -355,9 +382,12 @@ const LeafCastShadow: React.FC<{ theta: SharedValue<number>; presence: SharedVal
     const t = theta.value;
     const rad = (t * Math.PI) / 180;
     const right = t < 90;
+    const lift = Math.sin(rad);
     const f = 0.18 + 0.82 * Math.abs(Math.cos(rad));
+    // Pico de densidad hacia los 35° de altura y difuminado en vertical
+    const density = lift * (1.25 - 0.45 * lift);
     return {
-      opacity: 0.2 * Math.sin(rad) * presence.value,
+      opacity: Math.round(0.22 * density * presence.value * 100) / 100,
       transform: [
         { translateX: right ? (f * PAGE_WIDTH) / 2 - PAGE_WIDTH / 2 : (-f * PAGE_WIDTH) / 2 - PAGE_WIDTH / 2 },
         { scaleX: right ? f : -f },
@@ -443,6 +473,12 @@ const styles = StyleSheet.create({
     position: 'absolute',
     // Por encima de las hojas tumbadas (zIndex 10..10+LEAF_COUNT-1) y por debajo de las que vuelan
     zIndex: 10 + LEAF_COUNT,
+  },
+  glint: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
   },
   leafEdge: {
     backgroundColor: '#E9DFC9',

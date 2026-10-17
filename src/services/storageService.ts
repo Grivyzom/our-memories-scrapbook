@@ -9,6 +9,7 @@ import {
   Book,
   BookPage,
   PageBlock,
+  PageSide,
   ScrapbookSpreadData,
   StickerKind,
 } from '../types/scrapbook';
@@ -134,6 +135,48 @@ const migrateLegacySpread = (sp: any, i: number): ScrapbookSpreadData => {
   };
 };
 
+/* ==================== LIMPIEZA DEL COLLAGE DE MUESTRA ==================== */
+
+/**
+ * La versión 1 arrancaba con un collage de muestra (fotos de Unsplash y textos
+ * de ejemplo) que se guardaba como si fuera del usuario, y la migración lo
+ * conservaba: el libro "nuevo" nunca empezaba en blanco. Un pliego idéntico a
+ * esa plantilla —mismos componentes y textos, sin ninguna foto elegida por el
+ * usuario— se vacía. Basta con que haya tocado algo para que se respete.
+ * El selector de fotos sólo produce URIs locales (`file:`), así que una URL de
+ * Unsplash sólo puede venir de la muestra.
+ */
+const LEGACY_DEMO_PHOTO = /^https:\/\/images\.unsplash\.com\//;
+
+const isUntouchedLegacyDemo = (sp: ScrapbookSpreadData, i: number) => {
+  const template = migrateLegacySpread({}, i);
+  return (['left', 'right'] as PageSide[]).every((side) => {
+    const blocks = sp[side].blocks;
+    const expected = template[side].blocks;
+    return (
+      blocks.length === expected.length &&
+      blocks.every(
+        (b, k) =>
+          b.type === expected[k].type &&
+          b.text === expected[k].text &&
+          b.subtitle === expected[k].subtitle &&
+          b.photos.every((p) => !p || LEGACY_DEMO_PHOTO.test(p))
+      )
+    );
+  });
+};
+
+/** Devuelve el libro sin la muestra (o null si no había nada que limpiar). */
+const clearLegacyDemo = (book: Book): Book | null => {
+  if (!book.spreads.some(isUntouchedLegacyDemo)) return null;
+  const spreads = book.spreads.map((sp, i) =>
+    isUntouchedLegacyDemo(sp, i) ? { ...sp, left: { blocks: [] }, right: { blocks: [] } } : sp
+  );
+  const allEmpty = spreads.every((sp) => sp.left.blocks.length + sp.right.blocks.length === 0);
+  // Si todo era muestra queda un único pliego en blanco, como un libro nuevo
+  return { ...book, spreads: allEmpty ? spreads.slice(0, 1) : spreads };
+};
+
 /* ============================ LIBRO PROPIO ============================ */
 
 export async function loadBook(): Promise<Book> {
@@ -141,16 +184,22 @@ export async function loadBook(): Promise<Book> {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (raw) {
       const book = sanitizeBook(JSON.parse(raw), true);
-      if (book) return book;
+      if (book) {
+        const cleaned = clearLegacyDemo(book);
+        if (!cleaned) return book;
+        await saveBook(cleaned);
+        return cleaned;
+      }
     }
     const legacy = await AsyncStorage.getItem(LEGACY_STORAGE_KEY);
     if (legacy) {
       const parsed = JSON.parse(legacy);
       if (Array.isArray(parsed.spreads) && parsed.spreads.length > 0) {
-        const book: Book = {
+        const migrated: Book = {
           ...createEmptyBook(),
           spreads: parsed.spreads.map(migrateLegacySpread),
         };
+        const book = clearLegacyDemo(migrated) ?? migrated;
         await saveBook(book);
         await AsyncStorage.removeItem(LEGACY_STORAGE_KEY);
         return book;

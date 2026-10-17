@@ -603,6 +603,31 @@ export default function App() {
     enterBook();
   };
 
+  // Desde la bienvenida: se descarta el libro empezado y se diseña otro en blanco
+  const handleStartNewBook = () =>
+    new Promise<boolean>((resolve) => {
+      Alert.alert(
+        'Empezar un libro nuevo',
+        'Se borrarán todas las páginas y fotos de tu libro actual. ¿Quieres continuar?',
+        [
+          { text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
+          {
+            text: 'Borrar todo',
+            style: 'destructive',
+            onPress: async () => {
+              const fresh = await resetBook();
+              setBook(fresh);
+              setGiftCode(null);
+              setActiveSpreadIndex(0);
+              resolve(true);
+            },
+          },
+        ],
+        // En Android tocar fuera del diálogo lo cierra sin pulsar ningún botón
+        { cancelable: true, onDismiss: () => resolve(false) }
+      );
+    });
+
   const handleViewReceived = () => {
     switchViewMode('received');
     enterBook();
@@ -919,6 +944,7 @@ export default function App() {
                   receivedFrom={receivedBook ? receivedBook.dedicatedTo ?? '' : null}
                   onDedicate={handleDedicate}
                   onContinueOwnBook={handleContinueOwnBook}
+                  onStartNewBook={handleStartNewBook}
                   onOpenGift={handleImportBook}
                   onViewReceived={handleViewReceived}
                   onDismiss={welcomeFromMenu ? () => setScreen('book') : undefined}

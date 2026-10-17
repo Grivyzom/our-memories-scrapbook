@@ -9,6 +9,11 @@
  * en segmentos encadenados desde el lomo; cada segmento gira un poco menos que
  * el anterior (el borde libre se retrasa), lo que dibuja una parábola en el
  * aire como el papel de alto gramaje.
+ *
+ * El paso de página se describe con un único progreso (0 = sin pasar, 1 =
+ * pasada) que puede venir del dedo, de un muelle o de una curva temporal. Los
+ * valores fuera de [0, 1] (el sobrepaso de un muelle) se reflejan: la hoja no
+ * atraviesa la mesa, rebota en ella y se asienta, como el papel real.
  * ========================================================================= */
 
 export type Vec3 = { x: number; y: number; z: number };
@@ -201,4 +206,33 @@ export const leafBendFromProgress = (p: number, maxBend: number, bounceGain: num
   'worklet';
   const c = Math.min(1, Math.max(0, p));
   return maxBend * Math.sin(Math.PI * c) * (2.2 * c - 0.7) + Math.max(0, p - 1) * bounceGain;
+};
+
+/* ========================== PASO DE PÁGINA FÍSICO ========================== */
+
+/**
+ * Progreso del paso de página -> fracción de giro en [0, 1]. Lo que un muelle
+ * se pasa de 1 (o de 0, al cancelar) se refleja: la hoja choca con la mesa y
+ * rebota hacia arriba en vez de hundirse. El rebote se limita a ~18° para que
+ * un lanzamiento muy fuerte no la levante de forma exagerada.
+ */
+export const turnFraction = (progress: number) => {
+  'worklet';
+  const c = progress > 1 ? Math.max(0.9, 2 - progress) : progress < 0 ? Math.min(0.1, -progress) : progress;
+  return Math.min(1, Math.max(0, c));
+};
+
+/**
+ * Arrastre del dedo -> progreso. `travel` es la distancia recorrida hacia el
+ * otro lado en anchos de página (0..2). Si se agarrara el canto, éste seguiría
+ * al dedo con theta = acos(1 - travel): la hoja se levanta rápido al principio
+ * y se tumba despacio al final, como al pasarla de verdad. Esa curva tiene
+ * pendiente infinita en 0 (la hoja "salta" al primer píxel), así que se mezcla
+ * a partes iguales con la lineal: arranca suave y conserva el carácter físico.
+ */
+export const dragTurnProgress = (travel: number) => {
+  'worklet';
+  const d = Math.min(2, Math.max(0, travel));
+  const arc = Math.acos(1 - d) / Math.PI;
+  return 0.5 * (d / 2) + 0.5 * arc;
 };
