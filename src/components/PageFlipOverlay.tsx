@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Image, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import Animated, {
   Easing,
   SharedValue,
@@ -20,6 +20,8 @@ import {
   stackZIndex,
 } from './book3d/engine';
 import { LeafFace, LeafFaceKind, leafFaceWidth } from './book3d/LeafFace';
+import { SpreadPaper } from './ScrapbookSpread';
+import { PageSide, ScrapbookSpreadData } from '../types/scrapbook';
 
 /* =========================================================================
  * Paso de página: una hoja con grosor real despega del lomo, gira en el aire
@@ -30,19 +32,29 @@ import { LeafFace, LeafFaceKind, leafFaceWidth } from './book3d/LeafFace';
  * La curvatura del papel se sugiere con un degradado de luz continuo que se
  * intensifica mientras la hoja está en el aire.
  *
- * El pliego de destino se captura antes de empezar, así que durante todo el
- * giro se ven sus imágenes: debajo de la hoja que se levanta y en su reverso.
+ * Las caras de la hoja y las mitades fijas dibujan las páginas reales (el
+ * mismo papel que el pliego de debajo, ver SpreadPaper). Antes se capturaban
+ * en imagen los dos pliegos antes de girar: en Android cada captura tardaba
+ * cientos de milisegundos y el giro arrancaba con retraso.
  * ========================================================================= */
 
 export type FlipDirection = 'next' | 'prev';
 
+/** Un pliego tal como se ve en el libro (contenido e índice para los nº de página). */
+export interface FlipSpread {
+  spread: ScrapbookSpreadData;
+  index: number;
+}
+
 export interface FlipRequest {
   id: number;
   dir: FlipDirection;
-  /** Captura del pliego que se abandona (null si no se pudo capturar). */
-  oldUri: string | null;
-  /** Captura del pliego de destino (null si no se pudo capturar). */
-  newUri: string | null;
+  /** Pliego que se abandona. */
+  from: FlipSpread;
+  /** Pliego de destino. */
+  to: FlipSpread;
+  /** Libro editable: los huecos vacíos se dibujan con su invitación ("Elegir foto"). */
+  editable: boolean;
 }
 
 // Escenario = tapa exterior del pliego (ver ScrapbookSpread.outerBookCoverBase)
@@ -59,7 +71,8 @@ const LEAF_COUNT = 1;
 const SEGMENTS = 1;
 const STAGGER_MS = 80;
 const FLIGHT_MS = 920;
-const READY_TIMEOUT_MS = 450;
+// Espera máxima a las fotos del pliego que se abandona (ya están en memoria: suele ser 1–2 frames)
+const READY_TIMEOUT_MS = 250;
 
 const LEAF_SPEC: LeafSpec = {
   hinge: { x: 0, y: 0, z: 0 },
@@ -93,15 +106,11 @@ export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
   onReady,
   onFinished,
 }) => {
-  const { dir, oldUri, newUri } = request;
+  const { dir, from, to, editable } = request;
   const [running, setRunning] = useState(false);
   const presence = useSharedValue(0);
-  const loadedCount = useRef(0);
+  const loaded = useRef(new Set<string>());
   const readyFired = useRef(false);
-
-  // Imágenes que deben estar decodificadas antes de empezar: tiras del anverso y
-  // del reverso de la hoja + la mitad estática que queda en el lado de llegada
-  const expectedLoads = (oldUri ? SEGMENTS + 1 : 0) + (newUri ? SEGMENTS : 0);
 
   const markReady = useCallback(() => {
     if (readyFired.current) return;
@@ -112,18 +121,24 @@ export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
   }, [onReady, presence]);
 
   useEffect(() => {
-    if (expectedLoads === 0) {
-      markReady();
-      return;
-    }
     const timer = setTimeout(markReady, READY_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, []);
 
-  const handleImageLoaded = useCallback(() => {
-    loadedCount.current += 1;
-    if (loadedCount.current >= expectedLoads) markReady();
-  }, [expectedLoads, markReady]);
+  /*
+   * Sólo se espera a lo que tapa el pliego viejo cuando debajo se cambia al
+   * nuevo: la mitad fija y la cara de la hoja con la página que se abandona.
+   * Las páginas nuevas sólo asoman ya en pleno giro, así que cargan mientras.
+   */
+  const handleOldLoaded = useCallback(
+    (key: string) => {
+      loaded.current.add(key);
+      if (loaded.current.size >= 2) markReady();
+    },
+    [markReady]
+  );
+  const staticLoaded = useCallback(() => handleOldLoaded('static'), [handleOldLoaded]);
+  const leafLoaded = useCallback(() => handleOldLoaded('leaf'), [handleOldLoaded]);
 
   const handleLastLanded = useCallback(() => {
     presence.value = withTiming(0, { duration: 160 }, (finished) => {
@@ -133,45 +148,52 @@ export const PageFlipOverlay: React.FC<PageFlipOverlayProps> = ({
 
   const coverStyle = useAnimatedStyle(() => ({ opacity: presence.value }));
 
-  // La mitad del pliego viejo que sigue visible en el lado donde aterrizan las hojas
-  const coverLeft = dir === 'next' ? PAGE_INSET_X : SPINE_X;
+  // La página vieja que sigue visible en el lado donde aterriza la hoja, y la
+  // nueva que queda al descubierto en el lado del que despega
+  const landingSide: PageSide = dir === 'next' ? 'left' : 'right';
+  const liftSide: PageSide = dir === 'next' ? 'right' : 'left';
+  const leftOf = (side: PageSide) => (side === 'left' ? PAGE_INSET_X : SPINE_X);
 
   return (
     <View pointerEvents="none" style={styles.stage}>
-      {oldUri && (
-        <Animated.View
-          style={[
-            styles.staticHalf,
-            { left: coverLeft, top: PAGE_INSET_Y, width: PAGE_WIDTH, height: SPREAD_HEIGHT },
-            coverStyle,
-          ]}
-        >
-          <SnapshotSlice uri={oldUri} faceLeft={coverLeft} faceTop={PAGE_INSET_Y} onLoadEnd={handleImageLoaded} />
-        </Animated.View>
-      )}
+      {/* Bajo la hoja: la página nueva que va apareciendo (tapa el cambio de debajo) */}
+      <Animated.View style={[styles.half, styles.revealHalf, halfFrame(leftOf(liftSide)), coverStyle]}>
+        <PageSlice page={to} side={liftSide} editable={editable} faceLeft={leftOf(liftSide)} />
+      </Animated.View>
 
-      {Array.from({ length: LEAF_COUNT }, (_, i) => {
-        const isFirst = i === 0;
-        const isLast = i === LEAF_COUNT - 1;
-        const frontUri = dir === 'next' ? (isFirst ? oldUri : null) : isLast ? newUri : null;
-        const backUri = dir === 'next' ? (isLast ? newUri : null) : isFirst ? oldUri : null;
-        return (
-          <FlipLeaf
-            key={i}
-            index={i}
-            dir={dir}
-            running={running}
-            presence={presence}
-            frontUri={frontUri}
-            backUri={backUri}
-            onImageLoaded={handleImageLoaded}
-            onLanded={isLast ? handleLastLanded : undefined}
-          />
-        );
-      })}
+      <Animated.View style={[styles.half, styles.staticHalf, halfFrame(leftOf(landingSide)), coverStyle]}>
+        <PageSlice
+          page={from}
+          side={landingSide}
+          editable={editable}
+          faceLeft={leftOf(landingSide)}
+          onLoaded={staticLoaded}
+        />
+      </Animated.View>
+
+      <FlipLeaf
+        index={0}
+        dir={dir}
+        running={running}
+        presence={presence}
+        // Anverso = página derecha del lomo, reverso = izquierda
+        front={dir === 'next' ? from : to}
+        back={dir === 'next' ? to : from}
+        editable={editable}
+        onFrontLoaded={dir === 'next' ? leafLoaded : undefined}
+        onBackLoaded={dir === 'next' ? undefined : leafLoaded}
+        onLanded={handleLastLanded}
+      />
     </View>
   );
 };
+
+const halfFrame = (left: number) => ({
+  left,
+  top: PAGE_INSET_Y,
+  width: PAGE_WIDTH,
+  height: SPREAD_HEIGHT,
+});
 
 /* ================================ HOJA ================================ */
 
@@ -180,9 +202,11 @@ interface FlipLeafProps {
   dir: FlipDirection;
   running: boolean;
   presence: SharedValue<number>;
-  frontUri: string | null;
-  backUri: string | null;
-  onImageLoaded?: () => void;
+  front: FlipSpread;
+  back: FlipSpread;
+  editable: boolean;
+  onFrontLoaded?: () => void;
+  onBackLoaded?: () => void;
   onLanded?: () => void;
 }
 
@@ -191,9 +215,11 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
   dir,
   running,
   presence,
-  frontUri,
-  backUri,
-  onImageLoaded,
+  front,
+  back,
+  editable,
+  onFrontLoaded,
+  onBackLoaded,
   onLanded,
 }) => {
   const progress = useSharedValue(0);
@@ -239,28 +265,28 @@ const FlipLeaf: React.FC<FlipLeafProps> = ({
   };
 
   const renderSegment = (kind: Exclude<LeafFaceKind, 'edge'>, seg: number) => {
-    const uri = kind === 'front' ? frontUri : backUri;
+    const isFront = kind === 'front';
     const w = leafFaceWidth(LEAF_SPEC, kind);
     const segLen = LEAF_SPEC.length / SEGMENTS;
-    const centerX = kind === 'front' ? SPINE_X + (seg + 0.5) * segLen : SPINE_X - (seg + 0.5) * segLen;
-    const faceLeft = centerX - w / 2;
+    const centerX = isFront ? SPINE_X + (seg + 0.5) * segLen : SPINE_X - (seg + 0.5) * segLen;
     return (
       <LeafFace
         key={`${kind}-${seg}`}
         {...faceProps}
         kind={kind}
         seg={seg}
-        style={{ backgroundColor: kind === 'front' ? PAPER_FRONT : PAPER_BACK }}
+        // La página no cambia durante el giro: se mueve como una textura
+        rasterize
+        style={{ backgroundColor: isFront ? PAPER_FRONT : PAPER_BACK }}
       >
-        {uri && (
-          <SnapshotSlice
-            uri={uri}
-            faceLeft={faceLeft}
-            faceTop={PAGE_INSET_Y}
-            onLoadEnd={onImageLoaded}
-          />
-        )}
-        <LeafCurlShade theta={theta} fromSpineLeft={kind === 'front'} />
+        <PageSlice
+          page={isFront ? front : back}
+          side={isFront ? 'right' : 'left'}
+          editable={editable}
+          faceLeft={centerX - w / 2}
+          onLoaded={isFront ? onFrontLoaded : onBackLoaded}
+        />
+        <LeafCurlShade theta={theta} fromSpineLeft={isFront} />
       </LeafFace>
     );
   };
@@ -358,27 +384,35 @@ const LeafCastShadow: React.FC<{ theta: SharedValue<number>; presence: SharedVal
   );
 };
 
-/* ======================= RECORTE DE LA CAPTURA ======================= */
+/* ========================= PÁGINA DE LA HOJA ========================= */
 
-const SnapshotSlice: React.FC<{
-  uri: string;
+const noop = () => {};
+
+/**
+ * Una página del pliego recortada a la cara que la muestra: se dibuja el papel
+ * entero del pliego (sólo con los componentes de esa página) desplazado para
+ * que coincida al píxel con el pliego de debajo. `faceLeft` es la x de la cara
+ * en el escenario; la cara empieza a la altura del papel.
+ */
+const PageSlice: React.FC<{
+  page: FlipSpread;
+  side: PageSide;
+  editable: boolean;
   faceLeft: number;
-  faceTop: number;
-  onLoadEnd?: () => void;
-}> = ({ uri, faceLeft, faceTop, onLoadEnd }) => (
-  <Image
-    source={{ uri }}
-    onLoadEnd={onLoadEnd}
-    fadeDuration={0}
-    style={{
-      position: 'absolute',
-      left: -faceLeft,
-      top: -faceTop,
-      width: STAGE_WIDTH,
-      height: STAGE_HEIGHT,
-    }}
-  />
-);
+  onLoaded?: () => void;
+}> = React.memo(({ page, side, editable, faceLeft, onLoaded }) => (
+  <View style={[styles.slice, { left: PAGE_INSET_X - faceLeft }]}>
+    <SpreadPaper
+      spread={page.spread}
+      spreadIndex={page.index}
+      only={side}
+      // Mismo aspecto que el libro editable (huecos "Elegir foto", página en blanco)
+      onPressPhoto={editable ? noop : undefined}
+      onPressEmptyPage={editable ? noop : undefined}
+      onImagesLoaded={onLoaded}
+    />
+  </View>
+));
 
 const styles = StyleSheet.create({
   stage: {
@@ -388,11 +422,22 @@ const styles = StyleSheet.create({
     width: STAGE_WIDTH,
     height: STAGE_HEIGHT,
   },
-  staticHalf: {
+  half: {
     position: 'absolute',
     overflow: 'hidden',
     backgroundColor: PAPER_FRONT,
+  },
+  revealHalf: {
+    zIndex: 0,
+  },
+  staticHalf: {
     zIndex: 1,
+  },
+  slice: {
+    position: 'absolute',
+    top: 0,
+    width: SPREAD_WIDTH,
+    height: SPREAD_HEIGHT,
   },
   castShadow: {
     position: 'absolute',

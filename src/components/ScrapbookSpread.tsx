@@ -3,6 +3,7 @@ import { View, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { PageSide, ScrapbookSpreadData } from '../types/scrapbook';
 import { SPREAD_WIDTH, SPREAD_HEIGHT } from '../constants/defaultData';
+import { PAGE_WIDTH } from '../constants/blockCatalog';
 import { HDSpineBinding } from './Stickers';
 import { LeatherTexture, PaperTexture } from './Textures';
 import { BookPageView } from './blocks/BookPageView';
@@ -17,14 +18,13 @@ interface ScrapbookSpreadProps {
   /** Número de capas visibles en el bloque de hojas izquierdo / derecho. */
   leftStackLayers?: number;
   rightStackLayers?: number;
-  /** Se llama cada vez que todas las fotos del pliego terminan de cargar. */
-  onImagesLoaded?: () => void;
 }
 
-/** Fotos del pliego como "bloque:índice" -> uri (los huecos vacíos no cuentan). */
-const spreadPhotoMap = (spread: ScrapbookSpreadData) => {
+/** Fotos de las páginas dibujadas como "bloque:índice" -> uri (los huecos vacíos no cuentan). */
+const spreadPhotoMap = (spread: ScrapbookSpreadData, only?: PageSide) => {
   const map: Record<string, string> = {};
-  for (const page of [spread.left, spread.right]) {
+  const pages = only ? [spread[only]] : [spread.left, spread.right];
+  for (const page of pages) {
     for (const block of page.blocks) {
       block.photos.forEach((uri, i) => {
         if (uri) map[`${block.id}:${i}`] = uri;
@@ -85,19 +85,34 @@ const PageBlock: React.FC<{ side: 'left' | 'right'; layers: number }> = ({ side,
   );
 };
 
-export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
+interface SpreadPaperProps {
+  spread: ScrapbookSpreadData;
+  spreadIndex: number;
+  onPressPhoto?: (side: PageSide, blockId: string, photoIndex: number) => void;
+  onPressEmptyPage?: (side: PageSide) => void;
+  /** Dibuja sólo los componentes de esta página (la otra queda en blanco). */
+  only?: PageSide;
+  /** Se llama cada vez que todas las fotos dibujadas terminan de cargar. */
+  onImagesLoaded?: () => void;
+}
+
+/**
+ * El papel del pliego (920×600): texturas, curvatura, lomo y las dos páginas.
+ * El paso de página dibuja con él las caras de la hoja que gira, así se ven
+ * exactamente igual que el pliego de debajo sin tener que capturarlo.
+ */
+export const SpreadPaper: React.FC<SpreadPaperProps> = ({
   spread,
+  spreadIndex,
   onPressPhoto,
   onPressEmptyPage,
-  spreadIndex = 0,
-  leftStackLayers = 4,
-  rightStackLayers = 4,
+  only,
   onImagesLoaded,
 }) => {
   // URI ya cargada en cada hueco: al cambiar una sola foto basta con esperar a esa
   const loadedUris = useRef<Record<string, string>>({});
   const expectedRef = useRef<Record<string, string>>({});
-  expectedRef.current = spreadPhotoMap(spread);
+  expectedRef.current = spreadPhotoMap(spread, only);
   const onImagesLoadedRef = useRef(onImagesLoaded);
   onImagesLoadedRef.current = onImagesLoaded;
 
@@ -117,70 +132,87 @@ export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
   // Las fotos que no cambian no vuelven a avisar: se revisa al recibir el pliego nuevo
   useEffect(checkAllLoaded, [spread, checkAllLoaded]);
 
+  const renderPage = (side: PageSide) =>
+    only && only !== side ? (
+      <View key={side} style={styles.blankPage} />
+    ) : (
+      <BookPageView
+        key={side}
+        page={spread[side]}
+        side={side}
+        pageNumber={spreadIndex * 2 + (side === 'left' ? 1 : 2)}
+        onPressPhoto={onPressPhoto}
+        onPhotoLoaded={handlePhotoLoaded}
+        onPressEmpty={onPressEmptyPage}
+      />
+    );
+
   return (
-    <View style={styles.outerBookCoverBase}>
-      {/* Textura de cuero en las tapas burdeos */}
-      <View style={styles.leatherClip} pointerEvents="none">
-        <LeatherTexture seed={27} intensity={1.15} />
-      </View>
+    <View style={styles.mainSpreadPaper}>
+      {/* Textura de papel rasgado decorativo en esquinas */}
+      <View style={styles.tornPaperTopLeft} />
+      <View style={styles.tornPaperBottomRight} />
 
-      {/* Bloques de hojas escalonados: su grosor crece con las páginas de cada lado */}
-      <PageBlock side="left" layers={leftStackLayers} />
-      <PageBlock side="right" layers={rightStackLayers} />
+      {/* Textura de papel (fibras y motas) sobre ambas hojas */}
+      <PaperTexture seed={17} />
 
-      {/* Pliego doble principal */}
-      <View style={styles.mainSpreadPaper}>
-        {/* Textura de papel rasgado decorativo en esquinas */}
-        <View style={styles.tornPaperTopLeft} />
-        <View style={styles.tornPaperBottomRight} />
+      {/* Curvatura 3D de las hojas: sombra en el pliegue central y luz en los bordes */}
+      <LinearGradient
+        pointerEvents="none"
+        colors={[
+          'rgba(120, 90, 50, 0.10)',
+          'rgba(255, 255, 255, 0)',
+          'rgba(255, 255, 255, 0.10)',
+          'rgba(70, 45, 20, 0.22)',
+          'rgba(255, 255, 255, 0.10)',
+          'rgba(255, 255, 255, 0)',
+          'rgba(120, 90, 50, 0.10)',
+        ]}
+        locations={[0, 0.08, 0.42, 0.5, 0.58, 0.92, 1]}
+        start={{ x: 0, y: 0.5 }}
+        end={{ x: 1, y: 0.5 }}
+        style={styles.pageCurvatureShade}
+      />
 
-        {/* Textura de papel (fibras y motas) sobre ambas hojas */}
-        <PaperTexture seed={17} />
+      {/* Páginas con los componentes que eligió el usuario */}
+      {renderPage('left')}
+      {renderPage('right')}
 
-        {/* Curvatura 3D de las hojas: sombra en el pliegue central y luz en los bordes */}
-        <LinearGradient
-          pointerEvents="none"
-          colors={[
-            'rgba(120, 90, 50, 0.10)',
-            'rgba(255, 255, 255, 0)',
-            'rgba(255, 255, 255, 0.10)',
-            'rgba(70, 45, 20, 0.22)',
-            'rgba(255, 255, 255, 0.10)',
-            'rgba(255, 255, 255, 0)',
-            'rgba(120, 90, 50, 0.10)',
-          ]}
-          locations={[0, 0.08, 0.42, 0.5, 0.58, 0.92, 1]}
-          start={{ x: 0, y: 0.5 }}
-          end={{ x: 1, y: 0.5 }}
-          style={styles.pageCurvatureShade}
-        />
-
-        {/* Páginas con los componentes que eligió el usuario */}
-        <BookPageView
-          page={spread.left}
-          side="left"
-          pageNumber={spreadIndex * 2 + 1}
-          onPressPhoto={onPressPhoto}
-          onPhotoLoaded={handlePhotoLoaded}
-          onPressEmpty={onPressEmptyPage}
-        />
-        <BookPageView
-          page={spread.right}
-          side="right"
-          pageNumber={spreadIndex * 2 + 2}
-          onPressPhoto={onPressPhoto}
-          onPhotoLoaded={handlePhotoLoaded}
-          onPressEmpty={onPressEmptyPage}
-        />
-
-        {/* Lomo central con costuras */}
-        <View style={styles.centerSpineContainer} pointerEvents="none">
-          <HDSpineBinding height={SPREAD_HEIGHT} width={36} />
-        </View>
+      {/* Lomo central con costuras */}
+      <View style={styles.centerSpineContainer} pointerEvents="none">
+        <HDSpineBinding height={SPREAD_HEIGHT} width={36} />
       </View>
     </View>
   );
 };
+
+export const ScrapbookSpread: React.FC<ScrapbookSpreadProps> = ({
+  spread,
+  onPressPhoto,
+  onPressEmptyPage,
+  spreadIndex = 0,
+  leftStackLayers = 4,
+  rightStackLayers = 4,
+}) => (
+  <View style={styles.outerBookCoverBase}>
+    {/* Textura de cuero en las tapas burdeos */}
+    <View style={styles.leatherClip} pointerEvents="none">
+      <LeatherTexture seed={27} intensity={1.15} />
+    </View>
+
+    {/* Bloques de hojas escalonados: su grosor crece con las páginas de cada lado */}
+    <PageBlock side="left" layers={leftStackLayers} />
+    <PageBlock side="right" layers={rightStackLayers} />
+
+    {/* Pliego doble principal */}
+    <SpreadPaper
+      spread={spread}
+      spreadIndex={spreadIndex}
+      onPressPhoto={onPressPhoto}
+      onPressEmptyPage={onPressEmptyPage}
+    />
+  </View>
+);
 
 const styles = StyleSheet.create({
   outerBookCoverBase: {
@@ -201,6 +233,10 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     borderRadius: 18,
     overflow: 'hidden',
+  },
+  blankPage: {
+    width: PAGE_WIDTH,
+    height: SPREAD_HEIGHT,
   },
   pageCurvatureShade: {
     ...StyleSheet.absoluteFillObject,

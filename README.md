@@ -100,7 +100,7 @@ our-memories-scrapbook/
     │   │   └── LeafFace.tsx          # Cara proyectada de una hoja (anverso, reverso o canto)
     │   ├── BookCover3D.tsx           # Portada 3D del álbum con perspectiva, lomo y animación
     │   ├── InteractiveBookViewport.tsx # Viewport táctil (Pinch, Pan, botones de cámara y zoom)
-    │   ├── PageFlipOverlay.tsx       # Paso de página con una hoja continua (sin juntas)
+    │   ├── PageFlipOverlay.tsx       # Paso de página: la hoja dibuja las páginas reales (sin capturas)
     │   ├── ScrapbookSpread.tsx       # Pliego doble: tapas, bloques de hojas y las dos páginas
     │   ├── blocks/                   # Componentes que el usuario coloca en las páginas
     │   └── editor/PageEditor.tsx     # Editor de pliego: catálogo, orden, textos y fotos
@@ -259,10 +259,9 @@ eas build -p ios --profile production
 
 En [app.json](app.json) se encuentran configurados los permisos nativos requeridos:
 
-- **Android**:
-  - `READ_MEDIA_IMAGES` y `READ_EXTERNAL_STORAGE`: Necesarios para que el usuario pueda seleccionar fotografías desde su biblioteca.
+- **Android**: las fotos se eligen con el selector de fotos del sistema, que no necesita permiso de galería. Se bloquean `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `RECORD_AUDIO` y `CAMERA` (la app no los usa y Google Play exige justificarlos).
 - **iOS**:
-  - `NSPhotoLibraryUsageDescription`: Mensaje explicativo mostrado al usuario al solicitar acceso para elegir fotos en los marcos del álbum.
+  - `NSPhotoLibraryUsageDescription`: Mensaje explicativo por si iOS lo requiere; el selector de fotos (PHPicker) no pide permiso para elegir fotos.
   - `NSPhotoLibraryAddUsageDescription`: Permiso para guardar capturas y exportaciones en el carrete de fotos.
 
 Las fotos personalizadas **se almacenan localmente** en el dispositivo del usuario (`FileSystem.documentDirectory`) y nunca se envían a servidores de terceros sin el consentimiento del usuario.

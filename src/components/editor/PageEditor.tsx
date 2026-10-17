@@ -69,19 +69,25 @@ const getInsets = () => {
  * tocar nada. Ahora ocupa toda la pantalla: arriba se ve la página tal como
  * quedará, en medio sus componentes y abajo un botón fijo para añadir más.
  */
-export const PageEditor: React.FC<PageEditorProps> = (props) => (
-  <Modal
-    visible={props.visible}
-    animationType="slide"
-    presentationStyle="fullScreen"
-    statusBarTranslucent
-    onRequestClose={props.onClose}
-  >
-    <EditorScreen {...props} />
-  </Modal>
-);
+export const PageEditor: React.FC<PageEditorProps> = (props) => {
+  // "Atrás" en Android: primero cierra el catálogo y sólo después el editor
+  const backRef = useRef<(() => void) | null>(null);
+  return (
+    <Modal
+      visible={props.visible}
+      animationType="slide"
+      presentationStyle="fullScreen"
+      statusBarTranslucent
+      onRequestClose={() => (backRef.current ? backRef.current() : props.onClose())}
+    >
+      <EditorScreen {...props} backRef={backRef} />
+    </Modal>
+  );
+};
 
-const EditorScreen: React.FC<PageEditorProps> = ({
+const EditorScreen: React.FC<
+  PageEditorProps & { backRef: React.MutableRefObject<(() => void) | null> }
+> = ({
   visible,
   spread,
   spreadIndex,
@@ -89,6 +95,7 @@ const EditorScreen: React.FC<PageEditorProps> = ({
   onChange,
   onPickPhoto,
   onClose,
+  backRef,
 }) => {
   const insets = useMemo(getInsets, []);
   const { width, height } = useWindowDimensions();
@@ -153,6 +160,7 @@ const EditorScreen: React.FC<PageEditorProps> = ({
     flush();
     onClose();
   };
+  backRef.current = () => (catalogOpen ? setCatalogOpen(false) : close());
 
   useEffect(() => {
     if (visible) {

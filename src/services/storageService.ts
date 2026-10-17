@@ -179,16 +179,18 @@ const resizeActions = (width: number, height: number, maxSide: number) => {
   return [{ resize: width >= height ? { width: maxSide } : { height: maxSide } }];
 };
 
-/** Elige una foto de la galería y guarda una copia reducida dentro de la app. */
+/**
+ * Elige una foto de la galería y guarda una copia reducida dentro de la app.
+ *
+ * Se usa el selector de fotos del sistema (iOS 14+ y Android), que no necesita
+ * permiso de galería: antes se pedía y en Android 13/14 salía un diálogo de
+ * permisos extra (y si se negaba, ya no se podía elegir ninguna foto). Tampoco
+ * se recorta: en iOS el recorte era siempre cuadrado y en Android abría otra
+ * pantalla distinta; cada marco ya encuadra la foto a su forma.
+ */
 export async function pickAndPersistPhoto(blockId: string): Promise<string | null> {
-  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!permission.granted) {
-    throw new Error('PERMISSION_DENIED');
-  }
-
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
-    allowsEditing: true,
     quality: 1,
   });
 

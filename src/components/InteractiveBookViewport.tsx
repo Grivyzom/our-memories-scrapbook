@@ -4,7 +4,7 @@ import {
   Text,
   StyleSheet,
   Dimensions,
-  PixelRatio,
+  Platform,
   Pressable,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -18,7 +18,6 @@ import Animated, {
   withSpring,
   withTiming,
 } from 'react-native-reanimated';
-import { captureRef as captureViewRef } from 'react-native-view-shot';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraFocusZone, PageSide, ScrapbookSpreadData } from '../types/scrapbook';
 import {
@@ -28,7 +27,7 @@ import {
   getFullSpreadScale,
 } from '../constants/defaultData';
 import { ScrapbookSpread } from './ScrapbookSpread';
-import { FlipRequest, PageFlipOverlay, STAGE_HEIGHT, STAGE_WIDTH } from './PageFlipOverlay';
+import { FlipRequest, PageFlipOverlay } from './PageFlipOverlay';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -46,14 +45,12 @@ interface InteractiveBookViewportProps {
   /** Toca una página en blanco (abre el editor). */
   onPressEmptyPage?: (side: PageSide) => void;
   onCloseBook: () => void;
+  /** Vista del pliego visible (para compartirlo como imagen). */
   captureRef: React.RefObject<View>;
   /** Se llama cuando la hoja ya tapa el pliego viejo: cambia el pliego activo. */
   onGoToSpread: (index: number) => void;
   navRequest?: SpreadNavRequest | null;
-  /**
-   * false mientras la portada se abre o se cierra encima: no se precargan
-   * pliegos (no compite con la animación) y no se aceptan gestos.
-   */
+  /** false mientras la portada se abre o se cierra encima: no se aceptan gestos. */
   interactive: boolean;
   /** Se va a cerrar el libro: la cámara vuelve al encuadre de la portada. */
   closing: boolean;
@@ -81,58 +78,22 @@ const TILT_BY_ZONE: Record<CameraFocusZone, number> = {
   landscape90: 0,
 };
 const CAMERA_PERSPECTIVE = 1500;
+/*
+ * Balanceo en reposo sólo en iOS. En Android (nueva arquitectura) cada frame
+ * de una animación de Reanimated pasa por el árbol de vistas: con el libro
+ * abierto eso era trabajo continuo, sin pausa, que se notaba en los gestos,
+ * en el paso de página y en la batería de los móviles de gama media.
+ */
+const IDLE_SWAY = Platform.OS === 'ios';
 
 // Deslizar horizontalmente (en "Ambas") pasa de página
 const SWIPE_MIN_DISTANCE = 60;
 const SWIPE_MIN_VELOCITY = 350;
 
-// Espera máxima a que carguen las fotos del pliego de destino antes de capturarlo
-const PRELOAD_MAX_WAIT_MS = 900;
-// Tras un rato sin tocar nada se capturan por adelantado el pliego actual y sus vecinos
-const PREFETCH_IDLE_MS = 1200;
-const MAX_CACHED_CAPTURES = 6;
-
 // Grosor visible de cada bloque de hojas según cuántos pliegos quedan a cada lado
 const stackLayersFor = (sheets: number) => Math.min(8, 2 + sheets);
 
 const MAX_DOTS = 9;
-
-/**
- * Las capturas sólo se ven durante el giro, al tamaño en pantalla del pliego:
- * se toman a esa resolución (con margen) en vez de a la del pliego completo,
- * que en un móvil son ~2600 px de ancho y tardan mucho en codificarse.
- */
-const captureResolutionFor = (scale: number) =>
-  Math.min(1, Math.max(0.35, Math.abs(scale) * 1.3));
-
-const captureSpread = async (
-  ref: React.RefObject<View>,
-  resolution: number
-): Promise<string | null> => {
-  try {
-    if (!ref.current) return null;
-    const px = PixelRatio.get() * resolution;
-    return await captureViewRef(ref, {
-      format: 'jpg',
-      quality: 0.92,
-      result: 'tmpfile',
-      width: Math.round(STAGE_WIDTH * px),
-      height: Math.round(STAGE_HEIGHT * px),
-    });
-  } catch {
-    return null;
-  }
-};
-
-const noop = () => {};
-
-const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-
-interface CachedCapture {
-  key: string;
-  uri: string;
-  resolution: number;
-}
 
 const ZONES: { zone: CameraFocusZone; label: string }[] = [
   { zone: 'left', label: 'Izq.' },
@@ -185,6 +146,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const zoomedFlag = useSharedValue(0);
 
   useEffect(() => {
+    if (!IDLE_SWAY) return;
     if (isZoomedIn) {
       // Sin textura cacheada el balanceo obligaría a repintar todo el pliego en cada frame
       cancelAnimation(idleSway);
@@ -223,178 +185,41 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   };
 
   /* ==================== PASO DE PÁGINA ==================== */
+  // La hoja que gira dibuja las páginas reales de los dos pliegos: el giro
+  // empieza al instante, sin capturar nada antes (ver PageFlipOverlay)
   const [flip, setFlip] = useState<(FlipRequest & { target: number }) | null>(null);
-  // `id` distingue dos peticiones seguidas del mismo pliego
-  const [preload, setPreload] = useState<{ index: number; id: number } | null>(null);
-  const preloadIndex = preload ? preload.index : null;
-  const preloadCounter = useRef(0);
-  const preloadRef = useRef<View>(null);
-  const preloadResolver = useRef<(() => void) | null>(null);
-  const preloadReady = useRef<(() => void) | null>(null);
-  const preloadLoaded = useRef(false);
-  const preloadChain = useRef<Promise<unknown>>(Promise.resolve());
-  const inflight = useRef(new Map<string, Promise<string | null>>());
   const flipBusy = useRef(false);
   const flipCounter = useRef(0);
   const queuedTarget = useRef<number | null>(null);
 
   // Refs con el estado más reciente: turnTo se invoca desde gestos y efectos
   const activeIndexRef = useRef(activeSpreadIndex);
-  const totalRef = useRef(totalSpreads);
   const spreadsRef = useRef(spreads);
+  const editableRef = useRef(!!onPressPhoto);
   activeIndexRef.current = activeSpreadIndex;
-  totalRef.current = totalSpreads;
   spreadsRef.current = spreads;
+  editableRef.current = !!onPressPhoto;
 
-  /* ---- Caché de capturas: girar a un pliego ya capturado empieza al instante ---- */
-  const captureCache = useRef(new Map<number, CachedCapture>());
-  // Clave del pliego que hay ahora en pantalla cuando todas sus fotos han cargado
-  const liveLoadedKey = useRef<string | null>(null);
-
-  // Todo lo que cambia el dibujo de un pliego (fotos, nº de hojas a cada lado)
-  const keyFor = (index: number) => {
-    const sp = spreadsRef.current[index];
-    return sp
-      ? `${sp.id}|${spreadsRef.current.length}|${JSON.stringify(sp.left)}|${JSON.stringify(sp.right)}`
-      : '';
-  };
-  const cachedCapture = (index: number, resolution: number) => {
-    const hit = captureCache.current.get(index);
-    return hit && hit.key === keyFor(index) && hit.resolution >= resolution ? hit.uri : null;
-  };
-  const storeCapture = (index: number, key: string, uri: string | null, resolution: number) => {
-    if (!uri || key !== keyFor(index)) return;
-    const cache = captureCache.current;
-    cache.delete(index);
-    cache.set(index, { key, uri, resolution });
-    // Se descartan las más antiguas
-    while (cache.size > MAX_CACHED_CAPTURES) cache.delete(cache.keys().next().value!);
-  };
-  const currentResolution = () => captureResolutionFor(scale.value);
-
-  // Captura el pliego de destino, renderizado oculto bajo el actual, en cuanto sus fotos cargan
-  useEffect(() => {
-    if (!preload) return;
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      // Dos frames para que lo cargado llegue a pintarse antes de capturarlo
-      nextFrame()
-        .then(nextFrame)
-        .then(() => {
-          const resolve = preloadResolver.current;
-          preloadResolver.current = null;
-          resolve?.();
-        });
-    };
-    const timer = setTimeout(finish, PRELOAD_MAX_WAIT_MS);
-    preloadReady.current = finish;
-    if (preloadLoaded.current) finish();
-    return () => {
-      done = true;
-      clearTimeout(timer);
-      preloadReady.current = null;
-    };
-  }, [preload]);
-  const handlePreloadImagesLoaded = useCallback(() => {
-    preloadLoaded.current = true;
-    preloadReady.current?.();
+  const turnTo = useCallback((target: number) => {
+    const all = spreadsRef.current;
+    if (target < 0 || target >= all.length) return;
+    if (flipBusy.current) {
+      queuedTarget.current = target;
+      return;
+    }
+    const from = activeIndexRef.current;
+    if (target === from || !all[from]) return;
+    flipBusy.current = true;
+    flipCounter.current += 1;
+    setFlip({
+      id: flipCounter.current,
+      dir: target > from ? 'next' : 'prev',
+      from: { spread: all[from], index: from },
+      to: { spread: all[target], index: target },
+      editable: editableRef.current,
+      target,
+    });
   }, []);
-
-  /** Renderiza un pliego oculto y lo captura (en serie, uno cada vez). */
-  const renderAndCapture = useCallback((index: number, resolution: number) => {
-    const key = keyFor(index);
-    const inflightKey = `${index}|${key}|${resolution}`;
-    const pending = inflight.current.get(inflightKey);
-    if (pending) return pending;
-
-    const run = () =>
-      new Promise<string | null>((resolve) => {
-        preloadLoaded.current = false;
-        preloadResolver.current = async () => {
-          const uri = await captureSpread(preloadRef, resolution);
-          storeCapture(index, key, uri, resolution);
-          resolve(uri);
-        };
-        preloadCounter.current += 1;
-        setPreload({ index, id: preloadCounter.current });
-      });
-    const promise = preloadChain.current.then(run);
-    preloadChain.current = promise.catch(() => null);
-    inflight.current.set(inflightKey, promise);
-    promise.finally(() => inflight.current.delete(inflightKey));
-    return promise;
-  }, []);
-
-  /** Captura del pliego visible: de la caché si sigue igual, si no en el momento. */
-  const captureLive = async (resolution: number) => {
-    const index = activeIndexRef.current;
-    const cached = cachedCapture(index, resolution);
-    if (cached) return cached;
-    const key = keyFor(index);
-    const uri = await captureSpread(captureRef, resolution);
-    // Sólo se guarda si estaban todas las fotos (si no, se vería incompleta en el próximo giro)
-    if (liveLoadedKey.current === key) storeCapture(index, key, uri, resolution);
-    return uri;
-  };
-
-  const handleLiveImagesLoaded = useCallback(() => {
-    liveLoadedKey.current = keyFor(activeIndexRef.current);
-  }, []);
-
-  const turnTo = useCallback(
-    async (target: number) => {
-      if (target < 0 || target >= totalRef.current) return;
-      if (flipBusy.current) {
-        queuedTarget.current = target;
-        return;
-      }
-      const from = activeIndexRef.current;
-      if (target === from) return;
-      flipBusy.current = true;
-
-      const resolution = currentResolution();
-      const oldUri = await captureLive(resolution);
-      const newUri =
-        cachedCapture(target, resolution) ?? (await renderAndCapture(target, resolution));
-
-      flipCounter.current += 1;
-      setFlip({
-        id: flipCounter.current,
-        dir: target > from ? 'next' : 'prev',
-        oldUri,
-        newUri,
-        target,
-      });
-    },
-    [captureRef]
-  );
-
-  // En reposo se preparan las capturas del pliego actual y de sus vecinos
-  useEffect(() => {
-    if (flip || !interactive) return;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      const index = activeIndexRef.current;
-      const resolution = currentResolution();
-      const stillIdle = () => !cancelled && !flipBusy.current;
-      if (!stillIdle()) return;
-      if (liveLoadedKey.current === keyFor(index)) await captureLive(resolution);
-      for (const neighbor of [index + 1, index - 1]) {
-        if (!stillIdle()) return;
-        if (neighbor < 0 || neighbor >= totalRef.current) continue;
-        if (!cachedCapture(neighbor, resolution)) await renderAndCapture(neighbor, resolution);
-      }
-      // El pliego oculto ya no hace falta (salvo que un giro lo esté usando)
-      if (!flipBusy.current) setPreload(null);
-    }, PREFETCH_IDLE_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [activeSpreadIndex, spreads, flip, focusZone, interactive]);
 
   /* ==================== CIERRE ==================== */
   // Antes de cerrar, la cámara vuelve al encuadre en el que la portada toma el relevo
@@ -419,7 +244,6 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const handleFlipFinished = useCallback(() => {
     flipBusy.current = false;
     setFlip(null);
-    setPreload(null);
     const queued = queuedTarget.current;
     queuedTarget.current = null;
     if (queued !== null) turnTo(queued);
@@ -508,7 +332,6 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const activeZone = focusZone === 'center' ? 'full' : focusZone;
 
   const currentSpread = spreads[activeSpreadIndex] || spreads[0];
-  const preloadSpread = preloadIndex !== null ? spreads[preloadIndex] : null;
   const pageA = activeSpreadIndex * 2 + 1;
   const pageB = activeSpreadIndex * 2 + 2;
 
@@ -572,25 +395,6 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       <GestureDetector gesture={composedGesture}>
         <Animated.View style={styles.gestureStage}>
           <Animated.View style={animatedViewportStyle}>
-            {/* Pliego de destino, oculto bajo el actual, para capturarlo antes de girar */}
-            {preloadSpread && preloadIndex !== null && (
-              <View
-                ref={preloadRef}
-                collapsable={false}
-                pointerEvents="none"
-                style={styles.preloadLayer}
-              >
-                <ScrapbookSpread
-                  spread={preloadSpread}
-                  onPressPhoto={onPressPhoto ? noop : undefined}
-                  onPressEmptyPage={onPressEmptyPage ? noop : undefined}
-                  spreadIndex={preloadIndex}
-                  leftStackLayers={stackLayersFor(preloadIndex)}
-                  rightStackLayers={stackLayersFor(totalSpreads - 1 - preloadIndex)}
-                  onImagesLoaded={handlePreloadImagesLoaded}
-                />
-              </View>
-            )}
             {/* Con el pliego a su tamaño o menor se cachea entero en la GPU: el balanceo,
                 la inclinación y el encuadre sólo mueven una textura en vez de repintar
                 fotos, SVG y sombras. Con zoom > 1 se pinta en vivo para no perder nitidez. */}
@@ -607,7 +411,6 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
                 spreadIndex={activeSpreadIndex}
                 leftStackLayers={stackLayersFor(activeSpreadIndex)}
                 rightStackLayers={stackLayersFor(totalSpreads - 1 - activeSpreadIndex)}
-                onImagesLoaded={handleLiveImagesLoaded}
               />
             </View>
             {flip && (
@@ -761,11 +564,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'visible',
-  },
-  preloadLayer: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
   },
 
   /* --- Navegación inferior --- */

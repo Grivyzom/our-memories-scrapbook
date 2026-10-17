@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Pressable,
   Alert,
+  BackHandler,
   SafeAreaView,
   StatusBar as RNStatusBar,
   Platform,
@@ -199,7 +200,7 @@ export default function App() {
     }
     if (openEditorWhenOpen.current) {
       openEditorWhenOpen.current = false;
-      setEditor({ visible: true, side: 'left' });
+      showEditor('left');
     }
   };
 
@@ -275,10 +276,18 @@ export default function App() {
     }
   };
 
+  const showEditor = (side: PageSide) => {
+    // En Android el editor (un Modal) copia el color de la barra de estado al
+    // abrirse y no lo vuelve a leer: se pone oscuro antes, si no los iconos
+    // quedan blancos sobre el fondo claro del editor.
+    if (Platform.OS === 'android') RNStatusBar.setBarStyle('dark-content');
+    setEditor({ visible: true, side });
+  };
+
   const openEditor = (side: PageSide = 'left') => {
     if (isReadOnly) return;
     if (phaseRef.current === 'open') {
-      setEditor({ visible: true, side });
+      showEditor(side);
     } else if (phaseRef.current === 'closed') {
       openEditorWhenOpen.current = true;
       handleOpenBook();
@@ -310,15 +319,8 @@ export default function App() {
         ),
       }));
       showToast('Foto actualizada', 'image');
-    } catch (error: any) {
-      if (error?.message === 'PERMISSION_DENIED') {
-        Alert.alert(
-          'Permiso requerido',
-          'Activa el permiso de galería en los ajustes de tu teléfono para poner tus fotos en el libro.'
-        );
-      } else {
-        Alert.alert('Error', 'No se pudo guardar la foto.');
-      }
+    } catch {
+      Alert.alert('Error', 'No se pudo guardar la foto.');
     }
   };
 
@@ -533,6 +535,28 @@ export default function App() {
     switchViewMode('received');
     enterBook();
   };
+
+  /* ==================== BOTÓN ATRÁS (ANDROID) ==================== */
+
+  // Sin esto el botón o el gesto "atrás" cerraba la app aunque el libro
+  // estuviera abierto. Los Modal (menú, editor, regalo) gestionan el suyo y la
+  // bienvenida el propio. Se lee el estado más reciente desde una ref.
+  const handleBackPress = () => {
+    if (screen !== 'book') return false;
+    if (phaseRef.current === 'open') {
+      handleCloseBook();
+      return true;
+    }
+    // A media animación se ignora en vez de salir de golpe
+    return phaseRef.current !== 'closed';
+  };
+  const backPressRef = useRef(handleBackPress);
+  backPressRef.current = handleBackPress;
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => backPressRef.current());
+    return () => sub.remove();
+  }, []);
 
   /* ==================== MENÚS ==================== */
 

@@ -32,7 +32,14 @@ export const ActionSheet: React.FC<ActionSheetProps> = ({
   items,
   onClose,
 }) => (
-  <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+  <Modal
+    visible={visible}
+    transparent
+    animationType="slide"
+    // En Android el oscurecido también cubre la barra de estado, como en iOS
+    statusBarTranslucent
+    onRequestClose={onClose}
+  >
     <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar menú" />
     <View style={styles.sheet}>
       <View style={styles.handle} />

@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  BackHandler,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -53,6 +54,27 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
     setStep(initialStep);
     setName(initialName);
   }, [initialStep, initialName]);
+
+  // "Atrás" en Android hace lo mismo que el botón Volver de cada paso
+  const handleBack = () => {
+    if (step === 'dedicate') {
+      if (initialStep === 'dedicate' && onDismiss) onDismiss();
+      else setStep('choose');
+      return true;
+    }
+    if (onDismiss) {
+      onDismiss();
+      return true;
+    }
+    return false;
+  };
+  const backRef = useRef(handleBack);
+  backRef.current = handleBack;
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => backRef.current());
+    return () => sub.remove();
+  }, []);
 
   if (step === 'dedicate') {
     const trimmed = name.trim();
