@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -18,6 +18,7 @@ import {
   BLOCK_CATALOG,
   CATALOG_ORDER,
   PAGE_WIDTH,
+  QUICK_START,
   STICKER_OPTIONS,
   createBlock,
   fitsInPage,
@@ -34,9 +35,18 @@ interface PageEditorProps {
   visible: boolean;
   spread: ScrapbookSpreadData;
   spreadIndex: number;
+  /** Pliegos del libro: se puede pasar de uno a otro sin salir del editor. */
+  spreadCount: number;
   initialSide: PageSide;
   onChange: (spread: ScrapbookSpreadData) => void;
-  onPickPhoto: (side: PageSide, blockId: string, photoIndex: number) => void;
+  /**
+   * Elige fotos para un componente: la primera va a `photoIndex` y, si
+   * `count` > 1, las demás llenan los marcos vacíos siguientes.
+   */
+  onPickPhoto: (side: PageSide, blockId: string, photoIndex: number, count?: number) => void;
+  onGoToSpread: (index: number) => void;
+  /** Añade un pliego en blanco al final y pasa a él. */
+  onAddSpread: () => void;
   onClose: () => void;
 }
 
@@ -46,6 +56,8 @@ const pageNumberOf = (spreadIndex: number, side: PageSide) => spreadIndex * 2 + 
 
 // Tiempo que se agrupan las ediciones antes de subirlas al libro
 const COMMIT_DELAY_MS = 250;
+// Al añadir un componente con fotos se abre la galería cuando ya se cerró el catálogo
+const PICK_AFTER_ADD_MS = 380;
 
 /**
  * Editor de un pliego a pantalla completa. Antes era una hoja flotante con
@@ -76,9 +88,12 @@ const EditorScreen: React.FC<
   visible,
   spread,
   spreadIndex,
+  spreadCount,
   initialSide,
   onChange,
   onPickPhoto,
+  onGoToSpread,
+  onAddSpread,
   onClose,
   backRef,
 }) => {
@@ -121,8 +136,9 @@ const EditorScreen: React.FC<
     timerRef.current = setTimeout(flush, COMMIT_DELAY_MS);
   };
 
-  // Cambios que llegan de fuera (p. ej. una foto ya guardada) reemplazan el borrador
-  useEffect(() => {
+  // Cambios que llegan de fuera (una foto ya guardada, otro pliego) reemplazan el
+  // borrador antes de pintar: al cambiar de pliego no se ve el anterior ni un instante
+  useLayoutEffect(() => {
     if (spread !== emittedRef.current) {
       emittedRef.current = spread;
       draftRef.current = spread;
@@ -136,9 +152,9 @@ const EditorScreen: React.FC<
   const onPickPhotoRef = useRef(onPickPhoto);
   onPickPhotoRef.current = onPickPhoto;
   const pickPhoto = useCallback(
-    (s: PageSide, blockId: string, photoIndex: number) => {
+    (s: PageSide, blockId: string, photoIndex: number, count?: number) => {
       flush();
-      onPickPhotoRef.current(s, blockId, photoIndex);
+      onPickPhotoRef.current(s, blockId, photoIndex, count);
     },
     [flush]
   );
@@ -210,12 +226,54 @@ const EditorScreen: React.FC<
     setCatalogOpen(false);
     // El nuevo queda al final de la lista: se lleva a la vista
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
+    // Un componente de fotos se llena directamente: la galería se abre sola
+    const photoCount = BLOCK_CATALOG[type].photoCount;
+    if (photoCount > 0) {
+      setTimeout(() => pickPhoto(side, block.id, 0, photoCount), PICK_AFTER_ADD_MS);
+    }
+  };
+
+  // Un marco vacío de un componente con varios deja elegir de una vez los que faltan
+  const pickForSlot = (block: PageBlock, index: number) => {
+    const emptyFromHere = block.photos.slice(index).filter((uri) => !uri).length;
+    pickPhoto(side, block.id, index, block.photos[index] ? 1 : emptyFromHere);
   };
 
   const changeSide = (s: PageSide) => {
     setSide(s);
     setExpandedId(null);
   };
+
+  /* ---------- Pasar de pliego sin salir del editor ---------- */
+  const isLastSpread = spreadIndex >= spreadCount - 1;
+  const resetForNewSpread = () => {
+    setSide('left');
+    setExpandedId(null);
+    setCatalogOpen(false);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  };
+  const goToSpread = (index: number) => {
+    if (index < 0 || index >= spreadCount || index === spreadIndex) return;
+    // Lo pendiente se guarda en su pliego antes de cambiar
+    flush();
+    resetForNewSpread();
+    onGoToSpread(index);
+  };
+  const addSpread = () => {
+    flush();
+    resetForNewSpread();
+    onAddSpread();
+  };
+  const goForward = () => (isLastSpread ? addSpread() : goToSpread(spreadIndex + 1));
+
+  // Página llena: el botón inferior lleva a donde seguir
+  const continueLabel =
+    side === 'left'
+      ? `Seguir en la pág. ${pageNumberOf(spreadIndex, 'right')}`
+      : isLastSpread
+        ? 'Añadir pliego y seguir'
+        : 'Seguir en el pliego siguiente';
+  const continueDesigning = () => (side === 'left' ? changeSide('right') : goForward());
 
   // Vista previa: la página real, escalada para ocupar como mucho ~28% del alto
   const previewHeight = Math.min(250, Math.max(150, height * 0.28));
@@ -232,7 +290,10 @@ const EditorScreen: React.FC<
         {/* ---------- Barra superior ---------- */}
         <View style={[styles.topBar, { paddingTop: topInset + 8 }]}>
           <View style={styles.flex}>
-            <Text style={styles.title}>Diseñar pliego {spreadIndex + 1}</Text>
+            <Text style={styles.title}>
+              Diseñar pliego {spreadIndex + 1}
+              <Text style={styles.titleCount}> de {spreadCount}</Text>
+            </Text>
             <Text style={styles.subtitle}>
               Págs. {pageNumberOf(spreadIndex, 'left')}–{pageNumberOf(spreadIndex, 'right')} · se guarda solo
             </Text>
@@ -248,8 +309,21 @@ const EditorScreen: React.FC<
           </Pressable>
         </View>
 
-        {/* ---------- Página izquierda / derecha ---------- */}
+        {/* ---------- Pliego anterior · página izquierda / derecha · siguiente ---------- */}
         <View style={styles.tabs}>
+          <Pressable
+            onPress={() => goToSpread(spreadIndex - 1)}
+            disabled={spreadIndex === 0}
+            style={({ pressed }) => [
+              styles.spreadArrow,
+              spreadIndex === 0 && styles.disabled,
+              pressed && styles.pressed,
+            ]}
+            accessibilityLabel="Pliego anterior"
+            hitSlop={4}
+          >
+            <Ionicons name="chevron-back" size={20} color="#2B3654" />
+          </Pressable>
           {(['left', 'right'] as PageSide[]).map((s) => {
             const active = s === side;
             const sideFill = Math.min(1, pageFill(draft[s].blocks));
@@ -277,6 +351,22 @@ const EditorScreen: React.FC<
               </Pressable>
             );
           })}
+          <Pressable
+            onPress={goForward}
+            style={({ pressed }) => [
+              styles.spreadArrow,
+              isLastSpread && styles.spreadArrowAdd,
+              pressed && styles.pressed,
+            ]}
+            accessibilityLabel={isLastSpread ? 'Añadir un pliego al final' : 'Pliego siguiente'}
+            hitSlop={4}
+          >
+            <Ionicons
+              name={isLastSpread ? 'add' : 'chevron-forward'}
+              size={isLastSpread ? 22 : 20}
+              color="#2B3654"
+            />
+          </Pressable>
         </View>
 
         <ScrollView
@@ -312,10 +402,44 @@ const EditorScreen: React.FC<
             </View>
             <Text style={styles.previewHint}>
               {blocks.length === 0
-                ? 'Página en blanco: añade tu primer componente'
+                ? 'Página en blanco: elige con qué empezar'
                 : `Así se verá · ${Math.round(Math.min(1, fill) * 100)}% del espacio usado`}
             </Text>
           </View>
+
+          {/* ---------- Página vacía: empezar con un toque ---------- */}
+          {blocks.length === 0 && (
+            <>
+              <Text style={styles.sectionTitle}>Empieza con…</Text>
+              <View style={styles.quickRow}>
+                {QUICK_START.map((type) => {
+                  const def = BLOCK_CATALOG[type];
+                  return (
+                    <Pressable
+                      key={type}
+                      onPress={() => add(type)}
+                      style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
+                      accessibilityLabel={`Añadir ${def.label}`}
+                    >
+                      <View style={styles.catalogIcon}>
+                        <Ionicons name={def.icon} size={22} color="#8B1E24" />
+                      </View>
+                      <Text style={styles.quickLabel} numberOfLines={1}>
+                        {def.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Pressable
+                onPress={openCatalog}
+                style={({ pressed }) => [styles.quickMore, pressed && styles.pressed]}
+              >
+                <Text style={styles.quickMoreText}>Ver los {CATALOG_ORDER.length} componentes</Text>
+                <Ionicons name="chevron-forward" size={16} color="#2B3654" />
+              </Pressable>
+            </>
+          )}
 
           {/* ---------- Componentes de la página ---------- */}
           {blocks.length > 0 && <Text style={styles.sectionTitle}>En esta página</Text>}
@@ -357,7 +481,7 @@ const EditorScreen: React.FC<
                           {block.photos.map((uri, i) => (
                             <Pressable
                               key={i}
-                              onPress={() => pickPhoto(side, block.id, i)}
+                              onPress={() => pickForSlot(block, i)}
                               style={({ pressed }) => [styles.photoThumb, pressed && styles.pressed]}
                               accessibilityLabel={`Elegir foto ${i + 1}`}
                             >
@@ -447,21 +571,29 @@ const EditorScreen: React.FC<
 
         {/* ---------- Botón fijo: añadir componente ---------- */}
         <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-          <Pressable
-            onPress={() => setCatalogOpen(true)}
-            disabled={nothingFits}
-            style={({ pressed }) => [
-              styles.addButton,
-              nothingFits && styles.disabled,
-              pressed && styles.pressed,
-            ]}
-            accessibilityLabel="Añadir componente"
-          >
-            <Ionicons name={nothingFits ? 'checkmark-circle-outline' : 'add'} size={22} color="#FFF" />
-            <Text style={styles.addButtonText}>
-              {nothingFits ? 'Página llena' : 'Añadir componente'}
-            </Text>
-          </Pressable>
+          {nothingFits ? (
+            // Página llena: en vez de un botón apagado, el siguiente paso
+            <Pressable
+              onPress={continueDesigning}
+              style={({ pressed }) => [styles.addButton, styles.continueButton, pressed && styles.pressed]}
+              accessibilityLabel={`Página llena. ${continueLabel}`}
+            >
+              <View style={styles.flex}>
+                <Text style={styles.continueKicker}>PÁGINA LLENA</Text>
+                <Text style={styles.addButtonText}>{continueLabel}</Text>
+              </View>
+              <Ionicons name={side === 'right' && isLastSpread ? 'add' : 'arrow-forward'} size={22} color="#FFF" />
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => setCatalogOpen(true)}
+              style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
+              accessibilityLabel="Añadir componente"
+            >
+              <Ionicons name="add" size={22} color="#FFF" />
+              <Text style={styles.addButtonText}>Añadir componente</Text>
+            </Pressable>
+          )}
         </View>
       </KeyboardAvoidingView>
 
@@ -602,6 +734,11 @@ const styles = StyleSheet.create({
     fontFamily: SERIF,
     color: '#2B3654',
   },
+  titleCount: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#6B7390',
+  },
   subtitle: {
     fontSize: 12.5,
     color: '#6B7390',
@@ -625,9 +762,23 @@ const styles = StyleSheet.create({
   /* --- Pestañas de página --- */
   tabs: {
     flexDirection: 'row',
+    alignItems: 'stretch',
     gap: 8,
     paddingHorizontal: 16,
     paddingBottom: 6,
+  },
+  spreadArrow: {
+    width: 40,
+    borderRadius: 14,
+    backgroundColor: 'rgba(43, 54, 84, 0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  spreadArrowAdd: {
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(43, 54, 84, 0.35)',
   },
   tab: {
     flex: 1,
@@ -703,6 +854,38 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
     marginTop: 6,
     marginBottom: 8,
+  },
+  quickRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  quickCard: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(43, 54, 84, 0.08)',
+  },
+  quickLabel: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#2B3654',
+  },
+  quickMore: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: 12,
+    paddingVertical: 10,
+  },
+  quickMoreText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#2B3654',
   },
   card: {
     backgroundColor: '#FFFFFF',
@@ -866,6 +1049,16 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 16,
     fontWeight: '700',
+  },
+  continueButton: {
+    backgroundColor: '#2B3654',
+    paddingHorizontal: 18,
+  },
+  continueKicker: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 10.5,
+    fontWeight: '700',
+    letterSpacing: 0.8,
   },
 
   /* --- Catálogo --- */
