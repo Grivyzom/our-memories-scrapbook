@@ -34,6 +34,8 @@ interface LeafFaceProps {
   rasterize?: boolean;
   style?: StyleProp<ViewStyle>;
   children?: React.ReactNode;
+  /** Capa animada fuera de la textura cacheada (ver ProjectedFace). */
+  overlay?: React.ReactNode;
 }
 
 /** Ancho en pantalla de una cara de hoja (segmento con solape, hoja entera o canto). */
@@ -64,6 +66,7 @@ export const LeafFace: React.FC<LeafFaceProps> = ({
   rasterize,
   style,
   children,
+  overlay,
 }) => {
   const width = leafFaceWidth(spec, kind);
 
@@ -90,6 +93,7 @@ export const LeafFace: React.FC<LeafFaceProps> = ({
       project={project}
       shadeColor="#1A0F08"
       rasterize={rasterize}
+      overlay={overlay}
       style={[
         {
           width,

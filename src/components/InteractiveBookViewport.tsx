@@ -4,17 +4,13 @@ import {
   Text,
   StyleSheet,
   Dimensions,
-  Platform,
   Pressable,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
-  Easing,
-  cancelAnimation,
   runOnJS,
   useSharedValue,
   useAnimatedStyle,
-  withRepeat,
   withSpring,
   withTiming,
 } from 'react-native-reanimated';
@@ -28,7 +24,22 @@ import {
 } from '../constants/defaultData';
 import { ScrapbookSpread } from './ScrapbookSpread';
 import { FlipRequest, PageFlipOverlay } from './PageFlipOverlay';
+import { dragTurnProgress, leafFlightCurve } from './book3d/engine';
 
+/* =========================================================================
+ * Visor del libro abierto: cámara (encuadres, pinch, pan) y paso de página.
+ *
+ * El paso de página es interactivo: en "Ambas" un arrastre horizontal agarra
+ * la hoja y ésta sigue al dedo en tiempo real (ver dragTurnProgress). Al
+ * soltar decide la física: un lanzamiento rápido manda (hacia delante pasa la
+ * página, hacia atrás la devuelve) y si no, basta con haber pasado la mitad.
+ * Un muelle subamortiguado termina el giro con la velocidad del dedo, así un
+ * gesto suave posa la hoja y uno enérgico la hace rebotar un poco en la mesa.
+ *
+ * Todo el arrastre y el muelle corren en el hilo de UI. Sólo hay llamadas a JS
+ * en momentos sueltos —al agarrar la hoja (para montarla), al soltar (para
+ * cambiar el pliego de debajo si se pasa) y al terminar—, nunca por frame.
+ * ========================================================================= */
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 /** Petición externa de navegación (p. ej. al añadir un pliego nuevo). */
@@ -78,17 +89,37 @@ const TILT_BY_ZONE: Record<CameraFocusZone, number> = {
   landscape90: 0,
 };
 const CAMERA_PERSPECTIVE = 1500;
-/*
- * Balanceo en reposo sólo en iOS. En Android (nueva arquitectura) cada frame
- * de una animación de Reanimated pasa por el árbol de vistas: con el libro
- * abierto eso era trabajo continuo, sin pausa, que se notaba en los gestos,
- * en el paso de página y en la batería de los móviles de gama media.
- */
-const IDLE_SWAY = Platform.OS === 'ios';
+// Sin balanceo en reposo (en ninguna plataforma): con el libro quieto no se
+// anima nada, así no hay trabajo por frame ni gasto de batería sin interacción.
 
-// Deslizar horizontalmente (en "Ambas") pasa de página
-const SWIPE_MIN_DISTANCE = 60;
-const SWIPE_MIN_VELOCITY = 350;
+/* ---- Paso de página ---- */
+// Con los botones: vuelo completo con despegue, caída y rebote (leafFlightCurve)
+const FLIGHT_MS = 920;
+// Relevo final de la hoja al pliego real de debajo
+const FLIP_FADE_OUT_MS = 160;
+// Velocidad (en progreso de giro por segundo) a partir de la cual un
+// lanzamiento decide por sí solo, haya pasado o no la mitad (~450 px/s)
+const FLING_VELOCITY = 1.2;
+// Tope de la velocidad heredada del dedo: el rebote ya se limita en turnFraction
+const MAX_RELEASE_VELOCITY = 6;
+// Muelle al soltar, subamortiguado (ζ ≈ 0.77): sobrepasa ~2 % y la hoja rebota
+// unos grados en la mesa antes de asentarse. Umbrales finos: el progreso va de 0 a 1
+const TURN_SPRING = {
+  damping: 20,
+  stiffness: 170,
+  mass: 1,
+  restDisplacementThreshold: 0.001,
+  restSpeedThreshold: 0.01,
+};
+// Con más zoom que esto el arrastre mueve la cámara (se está mirando un detalle)
+const FLIP_MAX_ZOOM = 1.1;
+// Un arrastre agarra la hoja si es claramente horizontal
+const FLIP_HORIZONTAL_RATIO = 1.2;
+
+// Qué está haciendo el arrastre en curso (se decide al activarse el gesto)
+const DRAG_NONE = 0;
+const DRAG_CAMERA = 1;
+const DRAG_FLIP = 2;
 
 // Grosor visible de cada bloque de hojas según cuántos pliegos quedan a cada lado
 const stackLayersFor = (sheets: number) => Math.min(8, 2 + sheets);
@@ -139,23 +170,9 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const rotationDeg = useSharedValue(0);
   const tiltDeg = useSharedValue(TILT_BY_ZONE.full);
   const swipeEnabled = useSharedValue(1);
-  // Balanceo muy sutil en reposo: el libro "respira" sobre la mesa
-  const idleSway = useSharedValue(0);
   // Escala por encima de 1: el pliego deja de cachearse como textura (se vería borroso)
   const [isZoomedIn, setIsZoomedIn] = useState(false);
   const zoomedFlag = useSharedValue(0);
-
-  useEffect(() => {
-    if (!IDLE_SWAY) return;
-    if (isZoomedIn) {
-      // Sin textura cacheada el balanceo obligaría a repintar todo el pliego en cada frame
-      cancelAnimation(idleSway);
-      idleSway.value = withTiming(Math.round(idleSway.value), { duration: 400 });
-      return;
-    }
-    idleSway.value = 0;
-    idleSway.value = withRepeat(withTiming(1, { duration: 7200, easing: Easing.linear }), -1, false);
-  }, [isZoomedIn]);
 
   const applyCameraZone = (zone: CameraFocusZone) => {
     setFocusZone(zone);
@@ -187,39 +204,156 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   /* ==================== PASO DE PÁGINA ==================== */
   // La hoja que gira dibuja las páginas reales de los dos pliegos: el giro
   // empieza al instante, sin capturar nada antes (ver PageFlipOverlay)
-  const [flip, setFlip] = useState<(FlipRequest & { target: number }) | null>(null);
+  type ActiveFlip = FlipRequest & { target: number };
+  const [flip, setFlip] = useState<ActiveFlip | null>(null);
+  const flipRef = useRef<ActiveFlip | null>(null);
   const flipBusy = useRef(false);
   const flipCounter = useRef(0);
   const queuedTarget = useRef<number | null>(null);
+  // Estado del giro en curso: la hoja ya se ve, se decidió pasar (null = aún
+  // en el dedo) y el pliego de debajo ya es el de destino
+  const flipReady = useRef(false);
+  const flipCommitted = useRef<boolean | null>(null);
+  const flipSwapped = useRef(false);
+
+  // Progreso y opacidad de la hoja (hilo de UI); los mueven el dedo, el muelle o la curva
+  const flipProgress = useSharedValue(0);
+  const flipPresence = useSharedValue(0);
+  // Copia de flipBusy legible desde el gesto sin pasar por JS
+  const flipBusySV = useSharedValue(0);
+  const canPrevSV = useSharedValue(activeSpreadIndex > 0 ? 1 : 0);
+  const canNextSV = useSharedValue(activeSpreadIndex < totalSpreads - 1 ? 1 : 0);
+  // Arrastre en curso: qué mueve (DRAG_*), hacia dónde (1 = siguiente, dedo a la
+  // izquierda; -1 = anterior) y dónde estaba el dedo al activarse (el giro arranca
+  // desde 0, sin salto)
+  const dragMode = useSharedValue(DRAG_NONE);
+  const dragDir = useSharedValue(1);
+  const dragOriginX = useSharedValue(0);
+  useEffect(() => {
+    canPrevSV.value = activeSpreadIndex > 0 ? 1 : 0;
+    canNextSV.value = activeSpreadIndex < totalSpreads - 1 ? 1 : 0;
+  }, [activeSpreadIndex, totalSpreads]);
 
   // Refs con el estado más reciente: turnTo se invoca desde gestos y efectos
   const activeIndexRef = useRef(activeSpreadIndex);
   const spreadsRef = useRef(spreads);
   const editableRef = useRef(!!onPressPhoto);
+  const onGoToSpreadRef = useRef(onGoToSpread);
   activeIndexRef.current = activeSpreadIndex;
   spreadsRef.current = spreads;
   editableRef.current = !!onPressPhoto;
+  onGoToSpreadRef.current = onGoToSpread;
 
-  const turnTo = useCallback((target: number) => {
+  // La hoja ya tapa el pliego viejo: se cambia el contenido real de debajo
+  const swapUnderlying = useCallback(() => {
+    const f = flipRef.current;
+    if (!f || flipSwapped.current) return;
+    flipSwapped.current = true;
+    activeIndexRef.current = f.target;
+    onGoToSpreadRef.current(f.target);
+  }, []);
+
+  const startFlip = useCallback((target: number, interactive: boolean) => {
     const all = spreadsRef.current;
-    if (target < 0 || target >= all.length) return;
-    if (flipBusy.current) {
-      queuedTarget.current = target;
-      return;
-    }
     const from = activeIndexRef.current;
-    if (target === from || !all[from]) return;
+    if (target < 0 || target >= all.length || target === from || !all[from]) return false;
     flipBusy.current = true;
+    flipBusySV.value = 1;
+    flipReady.current = false;
+    // Con los botones el giro se decide al empezar; con el dedo, al soltar
+    flipCommitted.current = interactive ? null : true;
+    flipSwapped.current = false;
     flipCounter.current += 1;
-    setFlip({
+    const next: ActiveFlip = {
       id: flipCounter.current,
       dir: target > from ? 'next' : 'prev',
       from: { spread: all[from], index: from },
       to: { spread: all[target], index: target },
       editable: editableRef.current,
+      interactive,
       target,
-    });
+    };
+    flipRef.current = next;
+    setFlip(next);
+    return true;
   }, []);
+
+  const turnTo = useCallback(
+    (target: number) => {
+      if (flipBusy.current) {
+        queuedTarget.current = target;
+        return;
+      }
+      flipProgress.value = 0;
+      flipPresence.value = 0;
+      startFlip(target, false);
+    },
+    [startFlip]
+  );
+
+  const finishFlip = useCallback(() => {
+    if (flipCommitted.current) swapUnderlying();
+    flipRef.current = null;
+    flipBusy.current = false;
+    flipBusySV.value = 0;
+    setFlip(null);
+    const queued = queuedTarget.current;
+    queuedTarget.current = null;
+    if (queued !== null) turnTo(queued);
+  }, [swapUnderlying, turnTo]);
+
+  // La hoja ya está posada: se funde con el pliego real (idéntico) y se desmonta
+  const fadeOutFlip = () => {
+    'worklet';
+    flipPresence.value = withTiming(0, { duration: FLIP_FADE_OUT_MS }, () => {
+      runOnJS(finishFlip)();
+    });
+  };
+
+  // Al soltar: el muelle continúa con la velocidad del dedo hasta 1 (pasar) o 0 (devolver)
+  const settleFlip = (target: number, velocity: number) => {
+    'worklet';
+    const v = Math.max(-MAX_RELEASE_VELOCITY, Math.min(MAX_RELEASE_VELOCITY, velocity));
+    flipProgress.value = withSpring(target, { ...TURN_SPRING, velocity: v }, () => {
+      fadeOutFlip();
+    });
+  };
+
+  const handleFlipReady = useCallback(() => {
+    const f = flipRef.current;
+    if (!f) return;
+    flipReady.current = true;
+    if (!f.interactive) {
+      swapUnderlying();
+      flipProgress.value = withTiming(1, { duration: FLIGHT_MS, easing: leafFlightCurve }, () => {
+        fadeOutFlip();
+      });
+    } else if (flipCommitted.current) {
+      // Se soltó (pasando) antes de que la hoja llegara a verse
+      swapUnderlying();
+    }
+  }, []);
+
+  // El dedo agarró la hoja: se monta (única llamada a JS hasta soltar)
+  const beginDragFlip = useCallback(
+    (delta: number) => {
+      if (flipBusy.current || !startFlip(activeIndexRef.current + delta, true)) {
+        // Carrera con un botón o pliego inexistente: el dedo ya no mueve nada
+        dragMode.value = DRAG_NONE;
+        if (!flipBusy.current) flipBusySV.value = 0;
+      }
+    },
+    [startFlip]
+  );
+
+  // Se soltó la hoja: si pasa, el pliego de debajo cambia mientras el muelle la posa
+  const settleDragFlip = useCallback(
+    (commit: boolean) => {
+      flipCommitted.current = commit;
+      if (commit && flipReady.current) swapUnderlying();
+    },
+    [swapUnderlying]
+  );
 
   /* ==================== CIERRE ==================== */
   // Antes de cerrar, la cámara vuelve al encuadre en el que la portada toma el relevo
@@ -231,24 +365,6 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
     return () => clearTimeout(timer);
   }, [closing]);
 
-  const swipeTurn = useCallback(
-    (delta: number) => turnTo(activeIndexRef.current + delta),
-    [turnTo]
-  );
-
-  // La hoja ya tapa el pliego viejo: cambiamos el contenido real debajo
-  const handleFlipReady = useCallback(() => {
-    if (flip) onGoToSpread(flip.target);
-  }, [flip, onGoToSpread]);
-
-  const handleFlipFinished = useCallback(() => {
-    flipBusy.current = false;
-    setFlip(null);
-    const queued = queuedTarget.current;
-    queuedTarget.current = null;
-    if (queued !== null) turnTo(queued);
-  }, [turnTo]);
-
   const lastNavId = useRef<number | null>(null);
   useEffect(() => {
     if (!navRequest || navRequest.id === lastNavId.current) return;
@@ -257,24 +373,54 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   }, [navRequest, turnTo]);
 
   /* ==================== GESTOS ==================== */
-  // Pan con amortiguación; en "Ambas" un deslizamiento rápido pasa de página
+  // Un arrastre horizontal en "Ambas" agarra la hoja; cualquier otro mueve la cámara
   const panGesture = Gesture.Pan()
+    .onStart((e) => {
+      const dir = e.translationX < 0 ? 1 : -1;
+      const canTurn =
+        swipeEnabled.value === 1 &&
+        flipBusySV.value === 0 &&
+        scale.value <= fullSpreadScale * FLIP_MAX_ZOOM &&
+        Math.abs(e.translationX) > Math.abs(e.translationY) * FLIP_HORIZONTAL_RATIO &&
+        (dir === 1 ? canNextSV.value === 1 : canPrevSV.value === 1);
+      if (!canTurn) {
+        dragMode.value = DRAG_CAMERA;
+        return;
+      }
+      dragMode.value = DRAG_FLIP;
+      dragDir.value = dir;
+      dragOriginX.value = e.translationX;
+      flipBusySV.value = 1;
+      flipPresence.value = 0;
+      flipProgress.value = 0;
+      runOnJS(beginDragFlip)(dir);
+    })
     .onUpdate((e) => {
+      if (dragMode.value === DRAG_FLIP) {
+        // Recorrido hacia el otro lado, en anchos de página en pantalla
+        const pageW = (SPREAD_WIDTH / 2) * scale.value;
+        const travel = (-(e.translationX - dragOriginX.value) * dragDir.value) / pageW;
+        flipProgress.value = dragTurnProgress(travel);
+        return;
+      }
+      if (dragMode.value !== DRAG_CAMERA) return;
       translateX.value = savedTranslateX.value + e.translationX;
       translateY.value = savedTranslateY.value + e.translationY * 0.6;
     })
     .onEnd((e) => {
-      const isSwipe =
-        swipeEnabled.value === 1 &&
-        Math.abs(e.translationX) > SWIPE_MIN_DISTANCE &&
-        Math.abs(e.velocityX) > SWIPE_MIN_VELOCITY &&
-        Math.abs(e.translationX) > Math.abs(e.translationY) * 1.4;
-      if (isSwipe) {
-        translateX.value = withSpring(savedTranslateX.value, SPRING_CONFIG);
-        translateY.value = withSpring(savedTranslateY.value, SPRING_CONFIG);
-        runOnJS(swipeTurn)(e.translationX < 0 ? 1 : -1);
+      if (dragMode.value === DRAG_FLIP) {
+        dragMode.value = DRAG_NONE;
+        const pageW = (SPREAD_WIDTH / 2) * scale.value;
+        // Velocidad hacia el otro lado en progreso de giro por segundo
+        const v = (-e.velocityX * dragDir.value) / (2 * pageW);
+        const commit =
+          v > FLING_VELOCITY ? true : v < -FLING_VELOCITY ? false : flipProgress.value > 0.5;
+        runOnJS(settleDragFlip)(commit);
+        settleFlip(commit ? 1 : 0, v);
         return;
       }
+      if (dragMode.value !== DRAG_CAMERA) return;
+      dragMode.value = DRAG_NONE;
 
       const maxOffsetX = (SPREAD_WIDTH * 0.35) * scale.value;
       const maxOffsetY = (SPREAD_HEIGHT * 0.25) * scale.value;
@@ -286,11 +432,21 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       translateY.value = withSpring(clampedY, SPRING_CONFIG);
       savedTranslateX.value = clampedX;
       savedTranslateY.value = clampedY;
+    })
+    .onFinalize(() => {
+      // Gesto interrumpido sin onEnd (lo canceló el sistema): la hoja vuelve a su sitio
+      if (dragMode.value === DRAG_FLIP) {
+        runOnJS(settleDragFlip)(false);
+        settleFlip(0, 0);
+      }
+      dragMode.value = DRAG_NONE;
     });
 
   // Gesto Pinch-to-Zoom
   const pinchGesture = Gesture.Pinch()
     .onUpdate((e) => {
+      // Con la hoja agarrada la escala no cambia: el giro depende del ancho en pantalla
+      if (dragMode.value === DRAG_FLIP) return;
       const nextScale = savedScale.value * e.scale;
       scale.value = Math.max(fullSpreadScale * 0.85, Math.min(1.4, nextScale));
       const zoomed = scale.value > 1 ? 1 : 0;
@@ -305,23 +461,16 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
 
   const composedGesture = Gesture.Simultaneous(panGesture, pinchGesture);
 
-  const animatedViewportStyle = useAnimatedStyle(() => {
-    // El balanceo se apaga en vista apaisada (libro sin inclinación)
-    const swayAmount = Math.min(1, tiltDeg.value / 9);
-    // Empieza en 0 para que el relevo desde la portada no dé un salto
-    const sway = Math.sin(idleSway.value * 2 * Math.PI) * 0.5 * swayAmount;
-    return {
-      transform: [
-        { perspective: CAMERA_PERSPECTIVE },
-        { translateX: translateX.value },
-        { translateY: translateY.value },
-        { rotateX: `${tiltDeg.value + sway * 1.2}deg` },
-        { rotateY: `${sway * 1.6}deg` },
-        { rotateZ: `${rotationDeg.value}deg` },
-        { scale: scale.value },
-      ],
-    };
-  });
+  const animatedViewportStyle = useAnimatedStyle(() => ({
+    transform: [
+      { perspective: CAMERA_PERSPECTIVE },
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { rotateX: `${tiltDeg.value}deg` },
+      { rotateZ: `${rotationDeg.value}deg` },
+      { scale: scale.value },
+    ],
+  }));
 
   /* ==================== UI ==================== */
   const isFlipping = flip !== null;
@@ -395,8 +544,8 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
       <GestureDetector gesture={composedGesture}>
         <Animated.View style={styles.gestureStage}>
           <Animated.View style={animatedViewportStyle}>
-            {/* Con el pliego a su tamaño o menor se cachea entero en la GPU: el balanceo,
-                la inclinación y el encuadre sólo mueven una textura en vez de repintar
+            {/* Con el pliego a su tamaño o menor se cachea entero en la GPU: la
+                inclinación y el encuadre sólo mueven una textura en vez de repintar
                 fotos, SVG y sombras. Con zoom > 1 se pinta en vivo para no perder nitidez. */}
             <View
               ref={captureRef}
@@ -417,8 +566,9 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
               <PageFlipOverlay
                 key={flip.id}
                 request={flip}
+                progress={flipProgress}
+                presence={flipPresence}
                 onReady={handleFlipReady}
-                onFinished={handleFlipFinished}
               />
             )}
           </Animated.View>

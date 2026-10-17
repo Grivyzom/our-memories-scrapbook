@@ -60,6 +60,12 @@ interface ProjectedFaceProps {
   rasterize?: boolean;
   shadeColor: string;
   children?: React.ReactNode;
+  /**
+   * Capa animada sobre el contenido (luces de la curvatura, brillos). Va fuera
+   * de la textura cacheada: si estuviera dentro, cambiar su opacidad en cada
+   * frame obligaría a volver a pintar todo el arte de la cara en cada frame.
+   */
+  overlay?: React.ReactNode;
 }
 
 export const ProjectedFace: React.FC<ProjectedFaceProps> = ({
@@ -69,6 +75,7 @@ export const ProjectedFace: React.FC<ProjectedFaceProps> = ({
   rasterize = false,
   shadeColor,
   children,
+  overlay,
 }) => {
   const { transformStyle, metaStyle, shadeStyle } = useProjectedFace(project);
 
@@ -81,6 +88,7 @@ export const ProjectedFace: React.FC<ProjectedFaceProps> = ({
       >
         {children}
       </View>
+      {overlay}
       <Animated.View style={[styles.shade, { backgroundColor: shadeColor }, shadeStyle]} />
     </Animated.View>
   );
