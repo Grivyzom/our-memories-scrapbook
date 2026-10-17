@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Platform, StatusBar, StyleSheet, Text } from 'react-native';
+import { Platform, StyleSheet, Text } from 'react-native';
 import Animated, {
   runOnJS,
   useAnimatedStyle,
@@ -9,6 +9,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
+import { SYSTEM_INSETS } from '../../constants/systemInsets';
 
 export interface ToastMessage {
   id: number;
@@ -55,8 +56,10 @@ const styles = StyleSheet.create({
   toast: {
     position: 'absolute',
     alignSelf: 'center',
-    // Bajo el encabezado: no tapa la navegación de páginas ni el dock
-    top: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 74 : 104,
+    // Bajo el encabezado: no tapa la navegación de páginas ni el dock. En iOS
+    // se suma el margen real (notch / Dynamic Island): con un valor fijo el
+    // aviso quedaba encima del título en los iPhone recientes
+    top: SYSTEM_INSETS.top + (Platform.OS === 'android' ? 74 : 76),
     zIndex: 60,
     flexDirection: 'row',
     alignItems: 'center',

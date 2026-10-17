@@ -13,7 +13,6 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { initialWindowMetrics } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
   BLOCK_CATALOG,
@@ -25,6 +24,7 @@ import {
   pageFill,
 } from '../../constants/blockCatalog';
 import { SPREAD_HEIGHT } from '../../constants/defaultData';
+import { SYSTEM_INSETS } from '../../constants/systemInsets';
 import { BlockType, PageBlock, PageSide, ScrapbookSpreadData } from '../../types/scrapbook';
 import { BookPageView } from '../blocks/BookPageView';
 
@@ -46,21 +46,6 @@ const pageNumberOf = (spreadIndex: number, side: PageSide) => spreadIndex * 2 + 
 
 // Tiempo que se agrupan las ediciones antes de subirlas al libro
 const COMMIT_DELAY_MS = 250;
-
-/**
- * Márgenes del sistema. Se leen una vez de la ventana en vez de usar un
- * SafeAreaProvider dentro del Modal: en Android (nueva arquitectura) ese
- * proveedor nunca recibía las medidas y no pintaba nada, así que sólo se veía
- * la pantalla oscurecida del Modal.
- */
-const getInsets = () => {
-  const insets = initialWindowMetrics?.insets;
-  const statusBar = Platform.OS === 'android' ? StatusBar.currentHeight ?? 24 : 0;
-  return {
-    top: Math.max(insets?.top ?? 0, statusBar),
-    bottom: insets?.bottom ?? 0,
-  };
-};
 
 /**
  * Editor de un pliego a pantalla completa. Antes era una hoja flotante con
@@ -97,7 +82,9 @@ const EditorScreen: React.FC<
   onClose,
   backRef,
 }) => {
-  const insets = useMemo(getInsets, []);
+  // Márgenes leídos de la ventana: un SafeAreaProvider dentro del Modal no
+  // recibe medidas en Android (nueva arquitectura) y deja la pantalla en negro
+  const insets = SYSTEM_INSETS;
   const { width, height } = useWindowDimensions();
   const [side, setSide] = useState<PageSide>(initialSide);
   const [expandedId, setExpandedId] = useState<string | null>(null);
