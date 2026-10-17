@@ -4,6 +4,8 @@ import {
   Text,
   StyleSheet,
   Dimensions,
+  BackHandler,
+  Platform,
   Pressable,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -89,8 +91,13 @@ const TILT_BY_ZONE: Record<CameraFocusZone, number> = {
   landscape90: 0,
 };
 const CAMERA_PERSPECTIVE = 1500;
-// Sin balanceo en reposo (en ninguna plataforma): con el libro quieto no se
-// anima nada, así no hay trabajo por frame ni gasto de batería sin interacción.
+/*
+ * Sin balanceo en reposo en ninguna plataforma. Era una animación infinita
+ * por frame: en Android (nueva arquitectura) cada frame pasa por el árbol de
+ * vistas, y en iOS además invalidaba la textura rasterizada del pliego
+ * (shouldRasterizeIOS) en cada frame, así que se repintaban fotos y sombras
+ * sin parar. Con el libro quieto no se hace ningún trabajo.
+ */
 
 /* ---- Paso de página ---- */
 // Con los botones: vuelo completo con despegue, caída y rebote (leafFlightCurve)
@@ -371,6 +378,29 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
     lastNavId.current = navRequest.id;
     turnTo(navRequest.index);
   }, [navRequest, turnTo]);
+
+  /* ==================== BOTÓN ATRÁS (ANDROID) ==================== */
+  // Con zoom, una sola página o el pliego girado, "atrás" vuelve primero a
+  // "Ambas" y sólo la siguiente pulsación cierra el libro (la escucha de
+  // App.tsx se registró antes y BackHandler llama primero a la más reciente)
+  const handleBackPress = () => {
+    if (!interactive) return false;
+    const moved =
+      focusZone !== 'full' ||
+      Math.abs(savedScale.value - fullSpreadScale) > 0.01 ||
+      Math.abs(savedTranslateX.value) > 1 ||
+      Math.abs(savedTranslateY.value) > 1;
+    if (!moved) return false;
+    applyCameraZone('full');
+    return true;
+  };
+  const backPressRef = useRef(handleBackPress);
+  backPressRef.current = handleBackPress;
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => backPressRef.current());
+    return () => sub.remove();
+  }, []);
 
   /* ==================== GESTOS ==================== */
   // Un arrastre horizontal en "Ambas" agarra la hoja; cualquier otro mueve la cámara

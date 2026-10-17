@@ -84,22 +84,17 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
 
   if (step === 'dedicate') {
     const trimmed = name.trim();
+    const isNewBook = initialStep !== 'dedicate';
     return (
       <KeyboardAvoidingView
         style={styles.root}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
+        <TopBar
+          label="Volver"
+          onPress={() => (initialStep === 'dedicate' && onDismiss ? onDismiss() : setStep('choose'))}
+        />
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <Pressable
-            onPress={() => (initialStep === 'dedicate' && onDismiss ? onDismiss() : setStep('choose'))}
-            style={({ pressed }) => [styles.back, pressed && styles.pressed]}
-            accessibilityLabel="Volver"
-            hitSlop={8}
-          >
-            <Ionicons name="chevron-back" size={20} color="#FFF" />
-            <Text style={styles.backText}>Volver</Text>
-          </Pressable>
-
           <View style={styles.heartRow}>
             <WatercolorHeart size={44} rotation={-8} />
           </View>
@@ -123,17 +118,23 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
               onSubmitEditing={() => onDedicate(trimmed)}
             />
           </View>
+          {/* Cómo quedará en la portada, mientras se escribe */}
+          <View style={styles.coverPreview}>
+            <Text style={styles.coverPreviewLabel}>EN LA PORTADA</Text>
+            <Text style={styles.coverPreviewTitle}>Nuestros Recuerdos</Text>
+            <Text style={[styles.coverPreviewName, !trimmed && styles.coverPreviewEmpty]} numberOfLines={1}>
+              {trimmed ? `para ${trimmed}` : 'sin nombre'}
+            </Text>
+          </View>
 
           <Pressable
             onPress={() => onDedicate(trimmed)}
             style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
           >
-            <Text style={styles.primaryButtonText}>
-              {initialStep === 'dedicate' ? 'Guardar' : 'Empezar a diseñar'}
-            </Text>
-            <Ionicons name="arrow-forward" size={18} color="#2B3654" />
+            <Text style={styles.primaryButtonText}>{isNewBook ? 'Empezar a diseñar' : 'Guardar'}</Text>
+            <Ionicons name={isNewBook ? 'arrow-forward' : 'checkmark'} size={18} color="#2B3654" />
           </Pressable>
-          {initialStep !== 'dedicate' && (
+          {isNewBook && (
             <Pressable onPress={() => onDedicate('')} style={styles.linkButton} hitSlop={6}>
               <Text style={styles.linkText}>Prefiero no poner un nombre</Text>
             </Pressable>
@@ -145,19 +146,8 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
 
   return (
     <View style={styles.root}>
+      {onDismiss && <TopBar label="Volver al libro" onPress={onDismiss} />}
       <ScrollView contentContainerStyle={styles.scroll}>
-        {onDismiss && (
-          <Pressable
-            onPress={onDismiss}
-            style={({ pressed }) => [styles.back, pressed && styles.pressed]}
-            accessibilityLabel="Volver al libro"
-            hitSlop={8}
-          >
-            <Ionicons name="chevron-back" size={20} color="#FFF" />
-            <Text style={styles.backText}>Volver al libro</Text>
-          </Pressable>
-        )}
-
         <View style={styles.heartRow}>
           <WatercolorHeart size={52} rotation={-8} />
         </View>
@@ -219,6 +209,21 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
   );
 };
 
+/** Barra superior fija: el botón Volver nunca tapa el contenido al desplazarlo. */
+const TopBar: React.FC<{ label: string; onPress: () => void }> = ({ label, onPress }) => (
+  <View style={styles.topBar}>
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.back, pressed && styles.pressed]}
+      accessibilityLabel={label}
+      hitSlop={8}
+    >
+      <Ionicons name="chevron-back" size={20} color="#FFF" />
+      <Text style={styles.backText}>{label}</Text>
+    </Pressable>
+  </View>
+);
+
 const ChoiceCard: React.FC<{
   icon: IconName;
   title: string;
@@ -263,14 +268,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     paddingVertical: 28,
   },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingTop: 4,
+    minHeight: 44,
+  },
   back: {
-    position: 'absolute',
-    top: 8,
-    left: 14,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
-    paddingVertical: 6,
+    minHeight: 44,
     paddingHorizontal: 6,
   },
   backText: {
@@ -401,6 +410,41 @@ const styles = StyleSheet.create({
     fontFamily: SERIF,
     color: '#2B2623',
     paddingVertical: 8,
+  },
+  coverPreview: {
+    alignSelf: 'center',
+    alignItems: 'center',
+    marginTop: 14,
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+    maxWidth: '100%',
+  },
+  coverPreviewLabel: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+  },
+  coverPreviewTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontStyle: 'italic',
+    fontFamily: SERIF,
+    marginTop: 3,
+  },
+  coverPreviewName: {
+    color: '#F6D58E',
+    fontSize: 15,
+    fontStyle: 'italic',
+    fontFamily: SERIF,
+    marginTop: 1,
+  },
+  coverPreviewEmpty: {
+    color: 'rgba(255,255,255,0.45)',
   },
   primaryButton: {
     marginTop: 18,

@@ -58,6 +58,22 @@ export const formatGiftCode = (raw: string) => {
 
 export const isCompleteGiftCode = (input: string) => normalizeGiftCode(input).length === CODE_LENGTH;
 
+const CODE_IN_TEXT = new RegExp(
+  `(?:^|[^A-Z0-9])([${CODE_ALPHABET}]{4})[\\s-]?([${CODE_ALPHABET}]{4})[\\s-]?([${CODE_ALPHABET}]{4})(?![A-Z0-9])`,
+  'i'
+);
+
+/**
+ * Lo que se escribe o se pega en la casilla del código. Si se pega el mensaje
+ * entero ("Tu código secreto…: ABCD-EFGH-JKMN ❤️…") se queda sólo con el
+ * código; si no, se toman los primeros caracteres válidos.
+ */
+export const extractGiftCode = (input: string): string => {
+  const found = CODE_IN_TEXT.exec(input);
+  if (found) return formatGiftCode(found[1] + found[2] + found[3]);
+  return formatGiftCode(input.replace(/[^a-zA-Z0-9]/g, '').slice(0, CODE_LENGTH));
+};
+
 /* ---------------------------- Clave del código ---------------------------- */
 
 const deriveKey = (code: string, salt: Uint8Array, iterations: number) => {

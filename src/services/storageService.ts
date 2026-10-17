@@ -20,6 +20,7 @@ const RECEIVED_KEY = '@our_memories_received_book_v2';
 const LEGACY_STORAGE_KEY = '@our_memories_scrapbook_v1';
 const GIFT_CODE_KEY = '@our_memories_gift_code_v1';
 const APP_STATE_KEY = '@our_memories_app_state_v1';
+const GIFT_STATUS_KEY = '@our_memories_gift_status_v1';
 const PHOTOS_DIR = `${FileSystem.documentDirectory}scrapbook_photos/`;
 const RECEIVED_DIR = `${FileSystem.documentDirectory}received_book/`;
 
@@ -229,7 +230,8 @@ const resizeActions = (width: number, height: number, maxSide: number) => {
 };
 
 /**
- * Elige una foto de la galería y guarda una copia reducida dentro de la app.
+ * Elige fotos de la galería (hasta `limit`, en orden) y guarda una copia
+ * reducida de cada una dentro de la app.
  *
  * Se usa el selector de fotos del sistema (iOS 14+ y Android), que no necesita
  * permiso de galería: antes se pedía y en Android 13/14 salía un diálogo de
@@ -237,27 +239,32 @@ const resizeActions = (width: number, height: number, maxSide: number) => {
  * se recorta: en iOS el recorte era siempre cuadrado y en Android abría otra
  * pantalla distinta; cada marco ya encuadra la foto a su forma.
  */
-export async function pickAndPersistPhoto(blockId: string): Promise<string | null> {
+export async function pickAndPersistPhotos(blockId: string, limit = 1): Promise<string[]> {
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
     quality: 1,
+    // Un componente con varios marcos (la tira de negativos) se llena de una vez
+    ...(limit > 1 ? { allowsMultipleSelection: true, selectionLimit: limit } : null),
   });
 
   if (result.canceled || !result.assets || result.assets.length === 0) {
-    return null;
+    return [];
   }
 
-  const asset = result.assets[0];
-  const resized = await ImageManipulator.manipulateAsync(
-    asset.uri,
-    resizeActions(asset.width, asset.height, STORED_PHOTO_MAX_SIDE),
-    { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG }
-  );
-
   await ensureDirectoryExists(PHOTOS_DIR);
-  const destinationUri = `${PHOTOS_DIR}${blockId}_${Date.now()}.jpg`;
-  await FileSystem.moveAsync({ from: resized.uri, to: destinationUri });
-  return destinationUri;
+  const uris: string[] = [];
+  const stamp = Date.now();
+  for (const [i, asset] of result.assets.slice(0, limit).entries()) {
+    const resized = await ImageManipulator.manipulateAsync(
+      asset.uri,
+      resizeActions(asset.width, asset.height, STORED_PHOTO_MAX_SIDE),
+      { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    const destinationUri = `${PHOTOS_DIR}${blockId}_${stamp}_${i}.jpg`;
+    await FileSystem.moveAsync({ from: resized.uri, to: destinationUri });
+    uris.push(destinationUri);
+  }
+  return uris;
 }
 
 /** Borra el libro propio y sus fotos: se empieza con un libro en blanco. */
@@ -268,7 +275,7 @@ export async function resetBook(): Promise<Book> {
       await FileSystem.deleteAsync(PHOTOS_DIR, { idempotent: true });
     }
     // El libro nuevo es otro regalo: tendrá su propio código
-    await AsyncStorage.multiRemove([STORAGE_KEY, LEGACY_STORAGE_KEY, GIFT_CODE_KEY]);
+    await AsyncStorage.multiRemove([STORAGE_KEY, LEGACY_STORAGE_KEY, GIFT_CODE_KEY, GIFT_STATUS_KEY]);
   } catch (error) {
     console.warn('Error limpiando el libro:', error);
   }
@@ -322,6 +329,54 @@ export async function getGiftCode(): Promise<string> {
   const code = generateGiftCode();
   await AsyncStorage.setItem(GIFT_CODE_KEY, code);
   return code;
+}
+
+/* ============================ ESTADO DEL ENVÍO ============================ */
+
+/**
+ * Qué se hizo ya con el regalo. Sirve para marcar los pasos como hechos y
+ * avisar si el libro cambió después de enviarlo (hay que volver a enviarlo).
+ */
+export interface GiftStatus {
+  /** Cuándo se compartió el archivo por última vez. */
+  sentAt?: number;
+  /** Huella del libro tal como se envió. */
+  sentFingerprint?: string;
+  /** Cuándo se copió o compartió el código. */
+  codeSharedAt?: number;
+}
+
+/**
+ * Huella del contenido del libro: cambia con cualquier edición (textos,
+ * fotos, pliegos o dedicatoria). Es un hash rápido, no criptográfico.
+ */
+export const bookFingerprint = (book: Book): string => {
+  const text = JSON.stringify([book.dedicatedTo ?? '', book.spreads]);
+  let hash = 5381;
+  for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+  return `${text.length.toString(36)}-${(hash >>> 0).toString(36)}`;
+};
+
+export async function loadGiftStatus(): Promise<GiftStatus> {
+  try {
+    const raw = await AsyncStorage.getItem(GIFT_STATUS_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return {
+      sentAt: typeof parsed?.sentAt === 'number' ? parsed.sentAt : undefined,
+      sentFingerprint: typeof parsed?.sentFingerprint === 'string' ? parsed.sentFingerprint : undefined,
+      codeSharedAt: typeof parsed?.codeSharedAt === 'number' ? parsed.codeSharedAt : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export async function saveGiftStatus(status: GiftStatus): Promise<void> {
+  try {
+    await AsyncStorage.setItem(GIFT_STATUS_KEY, JSON.stringify(status));
+  } catch (error) {
+    console.warn('Error guardando el estado del regalo:', error);
+  }
 }
 
 /* ============================ COMPARTIR ============================ */
