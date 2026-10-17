@@ -64,7 +64,13 @@ export const GiftWrapSheet: React.FC<GiftWrapSheetProps> = ({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
       <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar" />
       <View style={styles.sheet}>
         <View style={styles.handle} />
@@ -181,10 +187,18 @@ export const GiftCodeSheet: React.FC<GiftCodeSheetProps> = ({ visible, onSubmit,
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        // En Android la ventana del Modal ya se encoge con el teclado; con 'height'
+        // se descontaba dos veces y la hoja daba un salto al aparecer el teclado
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar" />
         <View style={styles.sheet}>

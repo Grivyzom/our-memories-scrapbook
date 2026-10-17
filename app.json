@@ -26,17 +26,20 @@
       "adaptiveIcon": {
         "backgroundColor": "#8B1E24"
       },
-      "permissions": [
+      "permissions": [],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
         "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.READ_MEDIA_VIDEO"
       ]
     },
     "plugins": [
       [
         "expo-image-picker",
         {
-          "photosPermission": "Permite que Our Memories acceda a tus fotos para personalizar cada marco del scrapbook."
+          "photosPermission": "Permite que Our Memories acceda a tus fotos para personalizar cada marco del scrapbook.",
+          "cameraPermission": false,
+          "microphonePermission": false
         }
       ],
       "expo-asset",

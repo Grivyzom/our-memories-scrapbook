@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Dimensions,
   PixelRatio,
+  Platform,
   Pressable,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -81,6 +82,13 @@ const TILT_BY_ZONE: Record<CameraFocusZone, number> = {
   landscape90: 0,
 };
 const CAMERA_PERSPECTIVE = 1500;
+/*
+ * Balanceo en reposo sólo en iOS. En Android (nueva arquitectura) cada frame
+ * de una animación de Reanimated pasa por el árbol de vistas: con el libro
+ * abierto eso era trabajo continuo, sin pausa, que se notaba en los gestos,
+ * en el paso de página y en la batería de los móviles de gama media.
+ */
+const IDLE_SWAY = Platform.OS === 'ios';
 
 // Deslizar horizontalmente (en "Ambas") pasa de página
 const SWIPE_MIN_DISTANCE = 60;
@@ -185,6 +193,7 @@ export const InteractiveBookViewport: React.FC<InteractiveBookViewportProps> = (
   const zoomedFlag = useSharedValue(0);
 
   useEffect(() => {
+    if (!IDLE_SWAY) return;
     if (isZoomedIn) {
       // Sin textura cacheada el balanceo obligaría a repintar todo el pliego en cada frame
       cancelAnimation(idleSway);
