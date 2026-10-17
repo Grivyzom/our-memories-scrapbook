@@ -1,7 +1,7 @@
 import React from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { sheetBottomPadding } from './insets';
+import { SYSTEM_INSETS } from '../../constants/systemInsets';
 
 const CLOSE_DELAY_MS = 320;
 
@@ -57,7 +57,7 @@ export const ActionSheet: React.FC<ActionSheetProps> = ({
       onRequestClose={onClose}
     >
       <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar menú" />
-      <View style={[styles.sheet, { maxHeight: height * 0.88, paddingBottom: sheetBottomPadding() }]}>
+      <View style={[styles.sheet, { maxHeight: height * 0.88 }]}>
         <View style={styles.handle} />
         <Text style={styles.title}>{title}</Text>
         {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
@@ -132,6 +132,8 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 18,
     paddingTop: 10,
+    // Sobre el indicador de inicio de iOS (34 pt) sin pegarse a él
+    paddingBottom: Math.max(30, SYSTEM_INSETS.bottom + 16),
   },
   handle: {
     alignSelf: 'center',

@@ -18,7 +18,7 @@ import * as Clipboard from 'expo-clipboard';
 import { extractGiftCode, isCompleteGiftCode } from '../../services/giftCrypto';
 import { GiftStatus } from '../../services/storageService';
 import { BookSummary } from '../../constants/blockCatalog';
-import { sheetBottomPadding } from '../ui/insets';
+import { SYSTEM_INSETS } from '../../constants/systemInsets';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -147,7 +147,7 @@ export const GiftWrapSheet: React.FC<GiftWrapSheetProps> = ({
       onRequestClose={onClose}
     >
       <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar" />
-      <View style={[styles.sheet, { maxHeight: height * 0.92, paddingBottom: sheetBottomPadding() }]}>
+      <View style={[styles.sheet, { maxHeight: height * 0.92 }]}>
         <View style={styles.handle} />
         <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
           <View style={[styles.giftIcon, isEmpty && styles.giftIconMuted]}>
@@ -407,7 +407,7 @@ export const GiftCodeSheet: React.FC<GiftCodeSheetProps> = ({ visible, onSubmit,
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Cerrar" />
-        <View style={[styles.sheet, { paddingBottom: sheetBottomPadding() }]}>
+        <View style={styles.sheet}>
           <View style={styles.handle} />
           <View style={styles.giftIcon}>
             <Ionicons name="key" size={24} color="#FFFFFF" />
@@ -490,6 +490,8 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 18,
     paddingTop: 10,
+    // Sobre el indicador de inicio de iOS (34 pt) sin pegarse a él
+    paddingBottom: Math.max(30, SYSTEM_INSETS.bottom + 16),
   },
   scroll: {
     flexGrow: 0,

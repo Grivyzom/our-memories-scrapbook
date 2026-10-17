@@ -25,9 +25,9 @@ import {
   pageFill,
 } from '../../constants/blockCatalog';
 import { SPREAD_HEIGHT } from '../../constants/defaultData';
+import { SYSTEM_INSETS } from '../../constants/systemInsets';
 import { BlockType, PageBlock, PageSide, ScrapbookSpreadData } from '../../types/scrapbook';
 import { BookPageView } from '../blocks/BookPageView';
-import { getInsets } from '../ui/insets';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -97,7 +97,9 @@ const EditorScreen: React.FC<
   onClose,
   backRef,
 }) => {
-  const insets = useMemo(getInsets, []);
+  // Márgenes leídos de la ventana: un SafeAreaProvider dentro del Modal no
+  // recibe medidas en Android (nueva arquitectura) y deja la pantalla en negro
+  const insets = SYSTEM_INSETS;
   const { width, height } = useWindowDimensions();
   const [side, setSide] = useState<PageSide>(initialSide);
   const [expandedId, setExpandedId] = useState<string | null>(null);
